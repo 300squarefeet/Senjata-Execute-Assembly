@@ -5,13 +5,17 @@ pub enum Error {
     MixedMode,
     ArchMismatch,
     Malformed,
+    TargetFrameworkUnknown,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum ClrVersion { V2, V4 }
+pub enum Runtime {
+    NetFx4,
+    CoreClr,
+}
 
 pub struct AsmInfo {
-    pub version: ClrVersion,
+    pub runtime: Runtime,
 }
 
 const DOS_MAGIC: u16 = 0x5A4D;
@@ -81,30 +85,32 @@ pub fn parse(bytes: &[u8]) -> Result<AsmInfo, Error> {
                                    bytes[metadata_off+2], bytes[metadata_off+3]]);
     if sig != METADATA_SIGNATURE { return Err(Error::Malformed); }
 
-    let ver_len = u32::from_le_bytes([
-        bytes[metadata_off+12], bytes[metadata_off+13],
-        bytes[metadata_off+14], bytes[metadata_off+15]]) as usize;
-    let ver_off = metadata_off + 16;
-    if ver_off + ver_len > bytes.len() { return Err(Error::Malformed); }
-
-    let ver = &bytes[ver_off..ver_off + ver_len];
-    let ver_str = core::str::from_utf8(strip_nul(ver)).map_err(|_| Error::Malformed)?;
-    if !ver_str.starts_with('v') { return Err(Error::Malformed); }
-    let after_v = &ver_str[1..];
-    let dot = after_v.find('.').ok_or(Error::Malformed)?;
-    let major: u32 = after_v[..dot].parse().map_err(|_| Error::Malformed)?;
-    match major {
-        2 => Ok(AsmInfo { version: ClrVersion::V2 }),
-        4 => Ok(AsmInfo { version: ClrVersion::V4 }),
-        _ => Err(Error::Malformed),
-    }
+    // Both .NET Framework and .NET 6+ use 'v4.0.30319' in the metadata root —
+    // the real signal lives in the TargetFrameworkAttribute string embedded by
+    // every modern compiler.
+    let runtime = detect_runtime(bytes).ok_or(Error::TargetFrameworkUnknown)?;
+    Ok(AsmInfo { runtime })
 }
 
-fn strip_nul(b: &[u8]) -> &[u8] {
-    match b.iter().position(|&c| c == 0) {
-        Some(i) => &b[..i],
-        None => b,
+fn detect_runtime(bytes: &[u8]) -> Option<Runtime> {
+    // TargetFrameworkAttribute markers — emitted by every Roslyn/MSBuild
+    // compilation since .NET Framework 4.5+. Linear substring search.
+    let marker_core = opsec_strcrypt::obf!(".NETCoreApp,Version=");
+    let marker_netfx = opsec_strcrypt::obf!(".NETFramework,Version=");
+    if find_subseq(bytes, marker_core.as_bytes()) {
+        return Some(Runtime::CoreClr);
     }
+    if find_subseq(bytes, marker_netfx.as_bytes()) {
+        return Some(Runtime::NetFx4);
+    }
+    None
+}
+
+fn find_subseq(hay: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return false;
+    }
+    hay.windows(needle.len()).any(|w| w == needle)
 }
 
 fn rva_to_offset(bytes: &[u8], e_lfanew: usize, rva: usize) -> Option<usize> {
@@ -123,5 +129,4 @@ fn rva_to_offset(bytes: &[u8], e_lfanew: usize, rva: usize) -> Option<usize> {
     }
     None
 }
-
 

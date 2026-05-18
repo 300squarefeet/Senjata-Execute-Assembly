@@ -1,5 +1,5 @@
 use crate::error::BofError;
-use crate::pe_parser::{AsmInfo, ClrVersion};
+use crate::pe_parser::AsmInfo;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use opsec_com::appdomain::{AppDomain, Assembly, MethodInfo};
@@ -14,17 +14,11 @@ const V4_VERSION: &[u16] = &[
     b'v' as u16, b'4' as u16, b'.' as u16, b'0' as u16, b'.' as u16,
     b'3' as u16, b'0' as u16, b'3' as u16, b'1' as u16, b'9' as u16, 0,
 ];
-const V2_VERSION: &[u16] = &[
-    b'v' as u16, b'2' as u16, b'.' as u16, b'0' as u16, b'.' as u16,
-    b'5' as u16, b'0' as u16, b'7' as u16, b'2' as u16, b'7' as u16, 0,
-];
 
-pub unsafe fn start(info: &AsmInfo) -> Result<ComPtr<ICorRuntimeHost>, BofError> {
-    let version = match info.version {
-        ClrVersion::V4 => V4_VERSION,
-        ClrVersion::V2 => V2_VERSION,
-    };
-    unsafe { start_clr(version).map_err(|hr| BofError::Clr { hr, op: "c1" }) }
+pub unsafe fn start(_info: &AsmInfo) -> Result<ComPtr<ICorRuntimeHost>, BofError> {
+    // NetFx4 path always uses v4.0.30319. .NET 2.0/3.5 (v2.0.50727) support
+    // was removed in v0.2 — modern targets ship .NET 4.x by default.
+    unsafe { start_clr(V4_VERSION).map_err(|hr| BofError::Clr { hr, op: "c1" }) }
 }
 
 pub unsafe fn create_domain(
