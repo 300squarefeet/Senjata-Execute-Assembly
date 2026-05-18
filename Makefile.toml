@@ -18,17 +18,24 @@ dependencies = ["cargo-build", "boflink", "validate", "copy-aggressor"]
 command = "cargo"
 args = ["build", "--release", "--target", "${TARGET}",
         "-Z", "build-std=core,alloc",
+        "-Z", "build-std-features=compiler-builtins-mem",
         "-p", "senjata-execute-assembly"]
 
 [tasks.boflink]
 script = '''
 set -euo pipefail
 mkdir -p dist
+# --whole-archive scoped to our staticlib only (pull in chkstk_ms,
+# mem*, naked syscall fn that would otherwise be GC'd).
+# --no-whole-archive flips back so the -l import libs only pull
+# referenced stubs.
 boflink --mingw64 \
         --warn-unresolved-symbols \
+        --whole-archive \
+        target/${TARGET}/release/${BOF_LIB} \
+        --no-whole-archive \
         -lkernel32 -loleaut32 -lole32 \
-        -o dist/${BOF_OUT} \
-        target/${TARGET}/release/${BOF_LIB}
+        -o dist/${BOF_OUT}
 '''
 dependencies = ["cargo-build"]
 
