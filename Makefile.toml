@@ -93,7 +93,8 @@ args = ["test",
         "-p", "opsec-peb",
         "-p", "opsec-bootstrap",
         "-p", "opsec-hwbp",
-        "-p", "opsec-com"]
+        "-p", "opsec-com",
+        "-p", "opsec-coreclr"]
 
 [tasks.clean]
 command = "cargo"
@@ -109,6 +110,7 @@ args = ["clippy",
         "-p", "opsec-bootstrap",
         "-p", "opsec-hwbp",
         "-p", "opsec-com",
+        "-p", "opsec-coreclr",
         "-p", "senjata-execute-assembly",
         "--all-targets",
         "--no-deps",

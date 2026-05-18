@@ -5,10 +5,14 @@
 #![no_std]
 extern crate alloc;
 
-pub mod discovery;
+pub mod semver;
+#[cfg(target_arch = "x86_64")]
 pub mod fs;
-pub mod host;
+#[cfg(target_arch = "x86_64")]
 pub mod registry;
+#[cfg(target_arch = "x86_64")]
+pub mod discovery;
+pub mod host;
 pub mod stub_artifact;
 
 pub use host::Error;

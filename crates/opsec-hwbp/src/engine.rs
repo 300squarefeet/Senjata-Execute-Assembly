@@ -9,7 +9,7 @@ unsafe extern "C" { fn BeaconOutput(kind: i32, data: *const u8, len: i32); }
 macro_rules! bdbg {
     ($msg:literal) => {{
         let b: &[u8] = $msg;
-        unsafe { BeaconOutput(0x0D, b.as_ptr(), b.len() as i32); }
+        BeaconOutput(0x0D, b.as_ptr(), b.len() as i32);
     }}
 }
 
@@ -56,7 +56,9 @@ impl HwbpEngine {
                 veh::dispatch as unsafe extern "system" fn(*mut _) -> i32,
             );
             bdbg!(b"[hwbp] calling AddVectoredExceptionHandler\n");
-            let veh_handle = AddVectoredExceptionHandler(1, Some(core::mem::transmute(dispatch_fn)));
+            use windows_sys::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS;
+            type VehFn = unsafe extern "system" fn(*mut EXCEPTION_POINTERS) -> i32;
+            let veh_handle = AddVectoredExceptionHandler(1, Some(core::mem::transmute::<DispatchFn, VehFn>(dispatch_fn)));
             if veh_handle.is_null() {
                 return Err(Error::VehInstallFailed);
             }
