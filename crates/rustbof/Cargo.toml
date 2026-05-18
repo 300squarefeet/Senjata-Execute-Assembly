@@ -1,0 +1,16 @@
+[package]
+name = "rustbof"
+description = "Runtime support crate for writing BOFs in Rust"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rustbof-derive = { path = "../rustbof-derive" }
+
+[dependencies.windows-sys]
+version = "0.59"
+features = ["Win32_System_Memory"]
