@@ -2,5 +2,7 @@
 #![no_std]
 extern crate alloc;
 
-pub mod spin;
 pub mod descriptor;
+pub mod spin;
+#[cfg(target_os = "windows")]
+pub mod veh;
