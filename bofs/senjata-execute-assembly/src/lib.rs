@@ -4,6 +4,8 @@
 pub mod args;
 #[cfg(target_os = "windows")]
 pub mod error;
+#[cfg(target_os = "windows")]
+pub mod io;
 pub mod pe_parser;
 
 #[rustbof::main]

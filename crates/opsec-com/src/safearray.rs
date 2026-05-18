@@ -20,6 +20,7 @@ pub struct SafeArray {
 
 pub const VT_UI1: u16 = 0x0011;
 pub const VT_BSTR: u16 = 0x0008;
+pub const VT_VARIANT: u16 = 0x000C;
 
 pub struct OwnedSafeArray {
     pub ptr: *mut SafeArray,
