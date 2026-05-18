@@ -3,5 +3,6 @@
 #![no_std]
 
 mod hash;
+pub mod ntdef;
 
 pub use hash::djb2;
