@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rustbof",
+    "crates/rustbof-derive",
+    "crates/opsec-strcrypt",
+    "crates/opsec-strcrypt-rt",
+    "crates/opsec-peb",
+    "crates/opsec-bootstrap",
+    "crates/opsec-hwbp",
+    "crates/opsec-com",
+    "bofs/senjata-execute-assembly",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["xsnizer"]
+license = "MIT"
+repository = "https://github.com/xsnizer/Senjata-Assembly"
+
+[workspace.dependencies]
+windows-sys = "0.59"
+
+[profile.release]
+opt-level = "z"
+codegen-units = 1
+panic = "abort"
+strip = true
+lto = true
+overflow-checks = false
+debug-assertions = false
