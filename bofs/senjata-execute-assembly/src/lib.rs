@@ -3,6 +3,8 @@
 
 pub mod args;
 #[cfg(target_os = "windows")]
+pub mod cleanup;
+#[cfg(target_os = "windows")]
 pub mod clr;
 #[cfg(target_os = "windows")]
 pub mod error;
@@ -61,6 +63,20 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         };
 
         let assembly = clr::load_assembly(&domain, &a.asm_bytes)?;
+
+        let (resume_rip, resume_rsp) = cleanup::save_cleanup_point();
+        let ntdll_h = opsec_strcrypt::hash!("ntdll.dll");
+        let exit_h = opsec_strcrypt::hash!("RtlExitUserProcess");
+        let exit_target = opsec_peb::resolve_module(ntdll_h)
+            .and_then(|m| opsec_peb::resolve_export(m, exit_h))
+            .ok_or(BofError::PebResolve {
+                module_hash: ntdll_h,
+                export_hash: exit_h,
+            })?;
+        let _exit_trap = engine
+            .install_exit_trap(exit_target as usize, 2, resume_rip, resume_rsp)
+            .map_err(BofError::Hwbp)?;
+
         clr::invoke(&assembly, &a.asm_args, a.entry_point)?;
         let output = io_ch.drain()?;
         rustbof::println!("\n{}", output);
