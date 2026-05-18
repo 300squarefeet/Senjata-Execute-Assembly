@@ -7,7 +7,7 @@ BOF_OUT = "senjata-execute-assembly.x64.o"
 dependencies = ["build"]
 
 [tasks.build]
-dependencies = ["cargo-build", "boflink", "validate", "package"]
+dependencies = ["cargo-build", "boflink", "validate", "copy-aggressor"]
 
 [tasks.cargo-build]
 command = "cargo"
@@ -19,7 +19,8 @@ args = ["build", "--release", "--target", "${TARGET}",
 script = '''
 set -euo pipefail
 mkdir -p dist
-boflink -o dist/${BOF_OUT} \
+boflink --warn-unresolved-symbols \
+        -o dist/${BOF_OUT} \
         target/${TARGET}/release/${BOF_LIB}
 '''
 dependencies = ["cargo-build"]
@@ -42,7 +43,7 @@ fi
 echo "OK"
 '''
 
-[tasks.package]
+[tasks.copy-aggressor]
 dependencies = ["validate"]
 script = '''
 set -euo pipefail
