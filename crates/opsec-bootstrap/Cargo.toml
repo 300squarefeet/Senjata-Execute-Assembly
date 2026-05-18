@@ -6,3 +6,6 @@ edition.workspace = true
 [dependencies]
 opsec-peb = { path = "../opsec-peb" }
 opsec-strcrypt = { path = "../opsec-strcrypt" }
+
+[lints]
+workspace = true

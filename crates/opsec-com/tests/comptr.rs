@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use opsec_com::comptr::{ComPtr, Guid, IUnknown, IUnknownVtbl};
 use std::sync::atomic::{AtomicU32, Ordering};
 

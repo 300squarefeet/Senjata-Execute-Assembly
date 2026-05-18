@@ -44,14 +44,13 @@ pub unsafe fn resolve_module(name_hash: u32) -> Option<ModuleHandle> {
                 let mut buf = [0u8; 256];
                 let len = (name.length / 2) as usize;
                 if len < buf.len() {
-                    for i in 0..len {
+                    for (i, slot) in buf.iter_mut().enumerate().take(len) {
                         let wch = *name.buffer.add(i);
-                        let b = if (b'A' as u16..=b'Z' as u16).contains(&wch) {
+                        *slot = if (b'A' as u16..=b'Z' as u16).contains(&wch) {
                             (wch + 32) as u8
                         } else {
                             wch as u8
                         };
-                        buf[i] = b;
                     }
                     if djb2(&buf[..len]) == name_hash {
                         return Some(ModuleHandle((*entry).dll_base));
@@ -65,6 +64,9 @@ pub unsafe fn resolve_module(name_hash: u32) -> Option<ModuleHandle> {
 }
 
 /// Resolve a module and then resolve an export within it.
+///
+/// # Safety
+/// `module` must be a valid loaded-module base obtained from `resolve_module`.
 pub unsafe fn resolve_export(module: ModuleHandle, name_hash: u32) -> Option<*const ()> {
     unsafe {
         let rva = crate::pe::resolve_export_in_image(module.as_usize(), name_hash)?;

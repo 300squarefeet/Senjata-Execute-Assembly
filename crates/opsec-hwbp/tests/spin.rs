@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use opsec_hwbp::spin::SpinLock;
 use std::sync::Arc;
 use std::thread;

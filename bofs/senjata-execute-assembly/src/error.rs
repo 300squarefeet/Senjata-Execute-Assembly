@@ -28,10 +28,10 @@ impl BofError {
             BofError::PeParse(e) => format!("pe parse: {e:?}"),
             BofError::Io { last_error, op } => format!("io {op}: err={last_error}"),
             BofError::DotNetCore => {
-                format!(".NET Core/5+ not supported by legacy CLR hosting")
+                ".NET Core/5+ not supported by legacy CLR hosting".into()
             }
             BofError::MixedModeUnsupported => {
-                format!("mixed-mode (C++/CLI) assemblies are not supported")
+                "mixed-mode (C++/CLI) assemblies are not supported".into()
             }
             BofError::AssemblyThrew { type_name, message } => {
                 format!("assembly threw {type_name}: {message}")

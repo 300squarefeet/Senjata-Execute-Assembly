@@ -22,6 +22,7 @@ pub struct DescriptorTable {
 }
 
 impl DescriptorTable {
+    #[allow(clippy::new_without_default)] // const fn; Default::default cannot be const
     pub const fn new() -> Self {
         Self { inner: SpinLock::new(Vec::new()) }
     }

@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 use core::ffi::c_void;
 use opsec_peb::{resolve_export, resolve_module};
 use opsec_strcrypt::hash;

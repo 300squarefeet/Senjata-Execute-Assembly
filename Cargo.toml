@@ -22,6 +22,15 @@ repository = "https://github.com/xsnizer/Senjata-Assembly"
 [workspace.dependencies]
 windows-sys = "0.59"
 
+[workspace.lints.clippy]
+# All public unsafe fns in this crate are unsafe FFI shims into Windows APIs;
+# their safety contract is "the underlying Windows API contract holds". We
+# don't repeat that boilerplate as a `# Safety` block on every shim.
+missing_safety_doc = "allow"
+# Naming follows Win32 SDK conventions where it matters for FFI layout
+# clarity. snake_case-ifying field names would lose that.
+upper_case_acronyms = "allow"
+
 [profile.dev]
 panic = "abort"
 

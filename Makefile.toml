@@ -65,17 +65,35 @@ cp bofs/senjata-execute-assembly/aggressor/senjata-execute-assembly.cna dist/ 2>
 '''
 
 [tasks.test]
-description = "Run all Linux-runnable unit tests"
+# senjata-execute-assembly is Windows-only (depends on rustbof::BeaconAlloc which
+# calls HeapAlloc/HeapFree). Test only the platform-portable crates.
+description = "Run host-runnable unit tests"
 command = "cargo"
-args = ["test", "--workspace", "--target", "x86_64-unknown-linux-gnu"]
+args = ["test",
+        "-p", "opsec-strcrypt",
+        "-p", "opsec-strcrypt-rt",
+        "-p", "opsec-peb",
+        "-p", "opsec-bootstrap",
+        "-p", "opsec-hwbp",
+        "-p", "opsec-com"]
 
 [tasks.clean]
 command = "cargo"
 args = ["clean"]
 
 [tasks.lint]
+# Lint only our own crates; rustbof + rustbof-derive are vendored.
 command = "cargo"
-args = ["clippy", "--workspace", "--all-targets",
+args = ["clippy",
+        "-p", "opsec-strcrypt",
+        "-p", "opsec-strcrypt-rt",
+        "-p", "opsec-peb",
+        "-p", "opsec-bootstrap",
+        "-p", "opsec-hwbp",
+        "-p", "opsec-com",
+        "-p", "senjata-execute-assembly",
+        "--all-targets",
+        "--no-deps",
         "--target", "${TARGET}",
         "--", "-D", "warnings",
         "-D", "clippy::unwrap_used",
