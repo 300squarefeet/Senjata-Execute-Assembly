@@ -58,15 +58,21 @@ pub unsafe fn find_dotnet_root(bs: &Bootstrap) -> Option<String> {
         }
 
         // Tier 2: registry HKLM\SOFTWARE\dotnet\Setup\InstalledVersions\x64
-        let mut subkey: Vec<u16> = "\\Registry\\Machine\\SOFTWARE\\dotnet\\Setup\\InstalledVersions\\x64\0"
-            .encode_utf16().collect();
-        let mut value: Vec<u16> = "InstallLocation\0".encode_utf16().collect();
+        let subkey_obf = obfw!("\\Registry\\Machine\\SOFTWARE\\dotnet\\Setup\\InstalledVersions\\x64");
+        let mut subkey: Vec<u16> = subkey_obf.as_wide().to_vec();
+        subkey.push(0);
+        let value_obf = obfw!("InstallLocation");
+        let mut value: Vec<u16> = value_obf.as_wide().to_vec();
+        value.push(0);
         if let Some(s) = crate::registry::read_reg_sz_machine(bs, &mut subkey, &mut value) {
             return Some(s);
         }
 
         // Tier 3: well-known
-        Some(String::from("C:\\Program Files\\dotnet"))
+        let well_known = obf!("C:\\Program Files\\dotnet");
+        let well_known_str = core::str::from_utf8(well_known.as_bytes())
+            .unwrap_or("C:\\Program Files\\dotnet");
+        Some(String::from(well_known_str))
     }
 }
 
