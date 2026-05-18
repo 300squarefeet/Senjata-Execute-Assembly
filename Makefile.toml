@@ -1,0 +1,67 @@
+[env]
+TARGET = "x86_64-pc-windows-gnu"
+BOF_LIB = "libsenjata_execute_assembly.a"
+BOF_OUT = "senjata-execute-assembly.x64.o"
+
+[tasks.default]
+dependencies = ["build"]
+
+[tasks.build]
+dependencies = ["cargo-build", "boflink", "validate", "package"]
+
+[tasks.cargo-build]
+command = "cargo"
+args = ["build", "--release", "--target", "${TARGET}",
+        "-Z", "build-std=core,alloc",
+        "-p", "senjata-execute-assembly"]
+
+[tasks.boflink]
+script = '''
+set -euo pipefail
+mkdir -p dist
+boflink -o dist/${BOF_OUT} \
+        target/${TARGET}/release/${BOF_LIB}
+'''
+dependencies = ["cargo-build"]
+
+[tasks.validate]
+dependencies = ["boflink"]
+script = '''
+set -euo pipefail
+echo "==> Scanning .rdata for plaintext API names"
+if strings -n 8 dist/${BOF_OUT} | \
+     grep -E '(AmsiScanBuffer|NtTraceControl|RtlExitUserProcess|mscoree|amsi\.dll|ntdll\.dll|kernel32\.dll)'; then
+    echo "OPSEC FAIL: plaintext API/module name in binary"
+    exit 1
+fi
+echo "==> Checking for compiler-rt builtins (would need disk-resident .a)"
+if objdump -t dist/${BOF_OUT} | grep -E '__chkstk|__udivti3|__divti3|__modti3'; then
+    echo "BUILD FAIL: compiler-rt symbol present"
+    exit 1
+fi
+echo "OK"
+'''
+
+[tasks.package]
+dependencies = ["validate"]
+script = '''
+set -euo pipefail
+cp bofs/senjata-execute-assembly/aggressor/senjata-execute-assembly.cna dist/ 2>/dev/null || true
+'''
+
+[tasks.test]
+description = "Run all Linux-runnable unit tests"
+command = "cargo"
+args = ["test", "--workspace", "--target", "x86_64-unknown-linux-gnu"]
+
+[tasks.clean]
+command = "cargo"
+args = ["clean"]
+
+[tasks.lint]
+command = "cargo"
+args = ["clippy", "--workspace", "--all-targets",
+        "--target", "${TARGET}",
+        "--", "-D", "warnings",
+        "-D", "clippy::unwrap_used",
+        "-D", "clippy::expect_used"]
