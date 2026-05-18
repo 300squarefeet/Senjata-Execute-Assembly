@@ -1,5 +1,14 @@
 [build]
 rustflags = []
 
+# Beacon's BOF loader handles .text/.data/.rdata/.bss but not Rust's
+# default per-function .text.<name> subsections. Disable function-
+# and data-sections so everything lives in the standard COFF sections.
+[target.x86_64-pc-windows-gnu]
+rustflags = [
+    "-Z", "function-sections=no",
+    "-C", "no-redzone=y",
+]
+
 [target.x86_64-unknown-linux-gnu]
 linker = "x86_64-unknown-linux-gnu-gcc"

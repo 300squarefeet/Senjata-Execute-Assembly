@@ -35,7 +35,18 @@ boflink --mingw64 \
         target/${TARGET}/release/${BOF_LIB} \
         --no-whole-archive \
         -lkernel32 -loleaut32 -lole32 \
-        -o dist/${BOF_OUT}
+        -o dist/${BOF_OUT}.raw
+# Beacon's BOF loader only handles the standard COFF section names
+# (.text, .rdata, .data, .bss, .pdata, .xdata). compiler_builtins
+# emits __chkstk_ms in .text.___chkstk_ms and naked functions get a
+# .text.<mangled> section. Two-step fix:
+#   1. Rename .text.* sections to .text (so they share a name).
+#   2. ld -r --unique=.text to physically merge same-named sections.
+for SEC in $(x86_64-w64-mingw32-objdump -h dist/${BOF_OUT}.raw | awk '$2 ~ /^\.text\./ {print $2}'); do
+    x86_64-w64-mingw32-objcopy --rename-section "${SEC}=.text" dist/${BOF_OUT}.raw
+done
+x86_64-w64-mingw32-ld -r -o dist/${BOF_OUT} dist/${BOF_OUT}.raw
+rm -f dist/${BOF_OUT}.raw
 '''
 dependencies = ["cargo-build"]
 
