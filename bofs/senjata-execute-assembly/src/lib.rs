@@ -3,6 +3,8 @@
 
 pub mod args;
 #[cfg(target_os = "windows")]
+pub mod clr;
+#[cfg(target_os = "windows")]
 pub mod error;
 #[cfg(target_os = "windows")]
 pub mod io;
