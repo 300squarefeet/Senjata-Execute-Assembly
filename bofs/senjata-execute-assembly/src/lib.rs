@@ -36,6 +36,7 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         let asm_info = pe_parser::parse(&a.asm_bytes).map_err(|e| match e {
             pe_parser::Error::MixedMode => BofError::MixedModeUnsupported,
             pe_parser::Error::ArchMismatch => BofError::ArchMismatch,
+            pe_parser::Error::TargetFrameworkUnknown => BofError::TargetFrameworkUnknown,
             other => BofError::PeParse(other),
         })?;
         rustbof::eprintln!("[dbg] pe parsed ok");
