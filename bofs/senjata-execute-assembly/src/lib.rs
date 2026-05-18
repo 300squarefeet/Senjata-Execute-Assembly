@@ -1,6 +1,7 @@
 //! Senjata-Execute-Assembly BOF — entry point.
 #![no_std]
 
+pub mod args;
 pub mod pe_parser;
 
 #[rustbof::main]
