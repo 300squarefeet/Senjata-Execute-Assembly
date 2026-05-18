@@ -1,7 +1,12 @@
+[config]
+default_to_workspace = false
+
 [env]
 TARGET = "x86_64-pc-windows-gnu"
 BOF_LIB = "libsenjata_execute_assembly.a"
 BOF_OUT = "senjata-execute-assembly.x64.o"
+# Prefer rustup-managed nightly toolchain over any system stable cargo
+PATH = { value = "${HOME}/.cargo/bin:${PATH}", condition = { env_not_set = ["CARGO_MAKE_NO_PATH_OVERRIDE"] } }
 
 [tasks.default]
 dependencies = ["build"]
