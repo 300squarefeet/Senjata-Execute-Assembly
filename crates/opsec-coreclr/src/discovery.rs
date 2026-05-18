@@ -21,6 +21,7 @@ use crate::fs::{
 pub use crate::semver::semver_cmp;
 
 const FILE_LIST_DIRECTORY: u32 = 0x0001;
+const SYNCHRONIZE: u32 = 0x00100000;
 const FILE_SYNCHRONOUS_IO_NONALERT_LOCAL: u32 = 0x20;
 const FILE_OPEN: u32 = 0x01;
 const FILE_INFORMATION_CLASS_FULL_DIR: u32 = 2;  // FileFullDirectoryInformation
@@ -106,7 +107,7 @@ pub unsafe fn enumerate_dir(bs: &Bootstrap, dir_dos: &str) -> Option<Vec<String>
         let mut handle: *mut c_void = core::ptr::null_mut();
         let status = bs.nt_create_file(
             &mut handle,
-            FILE_LIST_DIRECTORY,
+            FILE_LIST_DIRECTORY | SYNCHRONIZE,
             &mut attrs as *mut _ as *mut c_void,
             &mut iosb as *mut _ as *mut c_void,
             core::ptr::null_mut(),
@@ -142,11 +143,11 @@ pub unsafe fn enumerate_dir(bs: &Bootstrap, dir_dos: &str) -> Option<Vec<String>
 
             let mut off = 0usize;
             loop {
-                if off + 64 >= buf.len() { break; }
+                if off + 68 >= buf.len() { break; }
                 let info = &buf[off..];
                 let next_off = u32::from_le_bytes([info[0], info[1], info[2], info[3]]) as usize;
                 let name_len = u32::from_le_bytes([info[60], info[61], info[62], info[63]]) as usize;
-                let name_start = 64usize;
+                let name_start = 68usize;
                 let name_end = name_start + name_len;
                 if name_end > info.len() { break; }
                 let u16s: Vec<u16> = info[name_start..name_end]
