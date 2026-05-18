@@ -12,8 +12,12 @@ pub mod fs;
 pub mod registry;
 #[cfg(target_arch = "x86_64")]
 pub mod discovery;
+#[cfg(target_arch = "x86_64")]
 pub mod host;
+#[cfg(target_arch = "x86_64")]
 pub mod stub_artifact;
 
+#[cfg(target_arch = "x86_64")]
 pub use host::Error;
+#[cfg(target_arch = "x86_64")]
 pub use host::run;
