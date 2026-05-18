@@ -10,3 +10,7 @@ pub mod bstr;
 pub mod safearray;
 #[cfg(target_os = "windows")]
 pub mod variant;
+#[cfg(target_os = "windows")]
+pub mod appdomain;
+#[cfg(target_os = "windows")]
+pub mod clr;
