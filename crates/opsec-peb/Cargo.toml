@@ -1,0 +1,7 @@
+[package]
+name = "opsec-peb"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["rlib"]

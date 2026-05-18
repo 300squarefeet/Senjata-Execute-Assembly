@@ -1,0 +1,27 @@
+[package]
+name = "senjata-execute-assembly"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+rustbof = { path = "../../crates/rustbof" }
+opsec-strcrypt = { path = "../../crates/opsec-strcrypt" }
+opsec-strcrypt-rt = { path = "../../crates/opsec-strcrypt-rt" }
+opsec-peb = { path = "../../crates/opsec-peb" }
+opsec-bootstrap = { path = "../../crates/opsec-bootstrap" }
+opsec-hwbp = { path = "../../crates/opsec-hwbp" }
+opsec-com = { path = "../../crates/opsec-com" }
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_Mailslots",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+]

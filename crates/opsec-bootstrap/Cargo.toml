@@ -1,0 +1,8 @@
+[package]
+name = "opsec-bootstrap"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+opsec-peb = { path = "../opsec-peb" }
+opsec-strcrypt = { path = "../opsec-strcrypt" }

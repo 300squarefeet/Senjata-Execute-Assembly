@@ -22,6 +22,9 @@ repository = "https://github.com/xsnizer/Senjata-Assembly"
 [workspace.dependencies]
 windows-sys = "0.59"
 
+[profile.dev]
+panic = "abort"
+
 [profile.release]
 opt-level = "z"
 codegen-units = 1

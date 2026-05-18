@@ -1,0 +1,17 @@
+[package]
+name = "opsec-hwbp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+opsec-peb = { path = "../opsec-peb" }
+opsec-bootstrap = { path = "../opsec-bootstrap" }
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+]
