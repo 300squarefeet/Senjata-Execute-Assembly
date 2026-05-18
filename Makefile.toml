@@ -55,9 +55,42 @@ dependencies = ["boflink"]
 script = '''
 set -euo pipefail
 echo "==> Scanning .rdata for plaintext API/module names"
-BAD_NAMES='AmsiScanBuffer|AmsiScanString|AmsiOpenSession|NtTraceControl|NtSetContextThread|NtGetContextThread|RtlExitUserProcess|CLRCreateInstance|SafeArrayCreate|SafeArrayDestroy|SafeArrayPutElement|SysAllocStringLen|SysFreeString|VariantClear|mscoree\.dll|amsi\.dll|ntdll\.dll|kernel32\.dll|kernelbase\.dll|oleaut32\.dll'
+BAD_NAMES='AmsiScanBuffer|AmsiScanString|AmsiOpenSession|NtTraceControl|NtSetContextThread|NtGetContextThread|RtlExitUserProcess|CLRCreateInstance|SafeArrayCreate|SafeArrayDestroy|SafeArrayPutElement|SafeArrayAccessData|SafeArrayUnaccessData|SysAllocStringLen|SysFreeString|VariantClear|coreclr_initialize|coreclr_create_delegate|coreclr_shutdown|SenjataLoader|TRUSTED_PLATFORM_ASSEMBLIES|NATIVE_DLL_SEARCH_DIRECTORIES|APP_PATHS|APP_NI_PATHS|DOTNET_ROOT|\.NETCoreApp|\.NETFramework|mscoree\.dll|amsi\.dll|ntdll\.dll|kernel32\.dll|kernelbase\.dll|oleaut32\.dll|coreclr\.dll|hostfxr\.dll|nethost\.dll|runtimeconfig\.json|Microsoft\.NETCore\.App|INetCache|Content\.MSO|LOCALAPPDATA'
 if strings -n 4 dist/${BOF_OUT} | grep -E "${BAD_NAMES}"; then
     echo "OPSEC FAIL: plaintext API/module name in binary"
+    exit 1
+fi
+echo "==> Scanning .rdata for plaintext managed PE (encrypted stub blob check)"
+# The stub.dll.xor asset is XOR-encrypted before include_bytes!. The literal
+# byte sequence "MZ" followed within 256 bytes by "PE\0\0" in the .rdata
+# section indicates that the unencrypted stub leaked into the binary.
+# Only .rdata is scanned — .text legitimately contains MZ/PE as comparison
+# immediates in the PE parser.
+if python3 -c "
+import sys, struct
+with open('dist/${BOF_OUT}', 'rb') as f:
+    data = f.read()
+num_sections = struct.unpack_from('<H', data, 2)[0]
+opt_size     = struct.unpack_from('<H', data, 16)[0]
+sec_off = 20 + opt_size
+rdata = b''
+for i in range(num_sections):
+    s = data[sec_off + i*40 : sec_off + i*40 + 40]
+    name = s[:8].rstrip(b'\x00')
+    raw_size, raw_ptr = struct.unpack_from('<II', s, 16)
+    if name == b'.rdata':
+        rdata = data[raw_ptr : raw_ptr + raw_size]
+        break
+for i in range(len(rdata) - 260):
+    if rdata[i:i+2] == b'MZ':
+        sub = rdata[i:i+260]
+        if b'PE\x00\x00' in sub:
+            print(f'OPSEC FAIL: plaintext PE signature in .rdata at offset 0x{i:x}', file=sys.stderr)
+            sys.exit(1)
+sys.exit(0)
+"; then
+    :
+else
     exit 1
 fi
 echo "==> Checking imports/symbol table for forbidden APIs"

@@ -18,13 +18,14 @@ pub unsafe fn run(
 }
 
 fn map_err(e: opsec_coreclr::Error) -> BofError {
+    use opsec_coreclr::CoreExport as CE;
     use opsec_coreclr::Error as E;
     match e {
         E::DotnetRootNotFound => BofError::Clr { hr: -1, op: "core1" },
         E::RuntimeNotFound => BofError::Clr { hr: -1, op: "core2" },
         E::CoreClrLoadFailed => BofError::Clr { hr: -1, op: "core3" },
-        E::ExportNotFound("coreclr_initialize") => BofError::Clr { hr: -1, op: "core4" },
-        E::ExportNotFound("coreclr_create_delegate") => BofError::Clr { hr: -1, op: "core5a" },
+        E::ExportNotFound(CE::CoreClrInitialize) => BofError::Clr { hr: -1, op: "core4" },
+        E::ExportNotFound(CE::CoreClrCreateDelegate) => BofError::Clr { hr: -1, op: "core5a" },
         E::ExportNotFound(_) => BofError::Clr { hr: -1, op: "core5" },
         E::StubDropFailed => BofError::Clr { hr: -1, op: "core6" },
         E::InitFailed(hr) => BofError::Clr { hr, op: "core7" },

@@ -18,6 +18,8 @@ pub mod host;
 pub mod stub_artifact;
 
 #[cfg(target_arch = "x86_64")]
+pub use host::CoreExport;
+#[cfg(target_arch = "x86_64")]
 pub use host::Error;
 #[cfg(target_arch = "x86_64")]
 pub use host::run;

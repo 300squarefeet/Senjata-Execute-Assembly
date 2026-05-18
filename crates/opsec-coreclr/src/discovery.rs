@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use opsec_bootstrap::Bootstrap;
 use opsec_peb::{resolve_export, resolve_module};
-use opsec_strcrypt::hash;
+use opsec_strcrypt::{hash, obf, obfw};
 
 use crate::fs::{
     IoStatusBlock, ObjectAttributes, OBJ_CASE_INSENSITIVE,
@@ -50,7 +50,9 @@ unsafe fn read_env(name_w: &[u16]) -> Option<String> {
 pub unsafe fn find_dotnet_root(bs: &Bootstrap) -> Option<String> {
     unsafe {
         // Tier 1: env DOTNET_ROOT
-        let env_name: Vec<u16> = "DOTNET_ROOT\0".encode_utf16().collect();
+        let dr_name = obfw!("DOTNET_ROOT");
+        let mut env_name: Vec<u16> = dr_name.as_wide().to_vec();
+        env_name.push(0);
         if let Some(s) = read_env(&env_name) {
             return Some(s);
         }
@@ -74,7 +76,12 @@ pub unsafe fn find_dotnet_root(bs: &Bootstrap) -> Option<String> {
 /// Calls into ntdll via Bootstrap.
 pub unsafe fn find_highest_runtime(bs: &Bootstrap, dotnet_root: &str) -> Option<String> {
     unsafe {
-        let dir = alloc::format!("{}\\shared\\Microsoft.NETCore.App", dotnet_root);
+        let nca_dir = obf!("\\shared\\Microsoft.NETCore.App");
+        let dir = alloc::format!(
+            "{}{}",
+            dotnet_root,
+            core::str::from_utf8(nca_dir.as_bytes()).unwrap_or(""),
+        );
         let entries = enumerate_dir(bs, &dir)?;
         let best = entries.iter()
             .filter(|name| name.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))
