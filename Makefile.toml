@@ -34,13 +34,18 @@ dependencies = ["cargo-build"]
 dependencies = ["boflink"]
 script = '''
 set -euo pipefail
-echo "==> Scanning .rdata for plaintext API names"
-if strings -n 8 dist/${BOF_OUT} | \
-     grep -E '(AmsiScanBuffer|NtTraceControl|RtlExitUserProcess|mscoree|amsi\.dll|ntdll\.dll|kernel32\.dll)'; then
+echo "==> Scanning .rdata for plaintext API/module names"
+BAD_NAMES='AmsiScanBuffer|AmsiScanString|AmsiOpenSession|NtTraceControl|NtSetContextThread|NtGetContextThread|RtlExitUserProcess|CLRCreateInstance|SafeArrayCreate|SafeArrayDestroy|SafeArrayPutElement|SysAllocStringLen|SysFreeString|VariantClear|mscoree\.dll|amsi\.dll|ntdll\.dll|kernel32\.dll|kernelbase\.dll|oleaut32\.dll'
+if strings -n 4 dist/${BOF_OUT} | grep -E "${BAD_NAMES}"; then
     echo "OPSEC FAIL: plaintext API/module name in binary"
     exit 1
 fi
-echo "==> Checking for compiler-rt builtins (would need disk-resident .a)"
+echo "==> Checking imports/symbol table for forbidden APIs"
+if objdump -t dist/${BOF_OUT} | grep -E "(GetProcAddress|LoadLibraryA|LoadLibraryW|LoadLibraryExA|LoadLibraryExW)"; then
+    echo "OPSEC FAIL: forbidden API imported"
+    exit 1
+fi
+echo "==> Compiler-rt symbol scan"
 if objdump -t dist/${BOF_OUT} | grep -E '__chkstk|__udivti3|__divti3|__modti3'; then
     echo "BUILD FAIL: compiler-rt symbol present"
     exit 1
