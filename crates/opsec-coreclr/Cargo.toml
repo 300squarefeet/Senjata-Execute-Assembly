@@ -1,0 +1,24 @@
+[package]
+name = "opsec-coreclr"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+opsec-peb = { path = "../opsec-peb" }
+opsec-strcrypt = { path = "../opsec-strcrypt" }
+opsec-strcrypt-rt = { path = "../opsec-strcrypt-rt" }
+opsec-bootstrap = { path = "../opsec-bootstrap" }
+opsec-com = { path = "../opsec-com" }
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+]
+
+[lints]
+workspace = true
