@@ -8,4 +8,6 @@ pub mod pe;
 pub mod peb_walk;
 
 pub use hash::djb2;
-pub use peb_walk::{resolve_export, resolve_module, ModuleHandle};
+pub use peb_walk::{resolve_export, ModuleHandle};
+#[cfg(target_arch = "x86_64")]
+pub use peb_walk::resolve_module;

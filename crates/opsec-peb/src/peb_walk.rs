@@ -1,6 +1,9 @@
-use crate::hash::djb2;
-use crate::ntdef::{current_teb, LdrDataTableEntry, ListEntry};
 use core::ffi::c_void;
+
+#[cfg(target_arch = "x86_64")]
+use crate::hash::djb2;
+#[cfg(target_arch = "x86_64")]
+use crate::ntdef::{current_teb, LdrDataTableEntry, ListEntry};
 
 #[derive(Clone, Copy)]
 pub struct ModuleHandle(pub *mut c_void);
@@ -16,6 +19,7 @@ impl ModuleHandle {
 ///
 /// # Safety
 /// Must be called from a Windows x64 thread with a valid TEB.
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn resolve_module(name_hash: u32) -> Option<ModuleHandle> {
     unsafe {
         let teb = current_teb();
