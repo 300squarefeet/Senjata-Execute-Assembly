@@ -4,5 +4,6 @@
 
 mod hash;
 pub mod ntdef;
+pub mod pe;
 
 pub use hash::djb2;
