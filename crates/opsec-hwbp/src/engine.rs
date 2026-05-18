@@ -5,14 +5,6 @@ use opsec_peb::{resolve_export, resolve_module};
 use opsec_strcrypt::hash;
 use core::ffi::c_void;
 
-unsafe extern "C" { fn BeaconOutput(kind: i32, data: *const u8, len: i32); }
-macro_rules! bdbg {
-    ($msg:literal) => {{
-        let b: &[u8] = $msg;
-        BeaconOutput(0x0D, b.as_ptr(), b.len() as i32);
-    }}
-}
-
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::Debug::{
     AddVectoredExceptionHandler, RemoveVectoredExceptionHandler,
@@ -47,22 +39,18 @@ pub struct HwbpGuard<'e> {
 impl HwbpEngine {
     pub unsafe fn init() -> Result<Self, Error> {
         unsafe {
-            bdbg!(b"[hwbp] bootstrap::init start\n");
             let bootstrap = Bootstrap::init().map_err(|_| Error::BootstrapFailed)?;
-            bdbg!(b"[hwbp] bootstrap::init ok\n");
 
             type DispatchFn = unsafe extern "system" fn(*mut c_void) -> i32;
             let dispatch_fn: DispatchFn = core::mem::transmute(
                 veh::dispatch as unsafe extern "system" fn(*mut _) -> i32,
             );
-            bdbg!(b"[hwbp] calling AddVectoredExceptionHandler\n");
             use windows_sys::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS;
             type VehFn = unsafe extern "system" fn(*mut EXCEPTION_POINTERS) -> i32;
             let veh_handle = AddVectoredExceptionHandler(1, Some(core::mem::transmute::<DispatchFn, VehFn>(dispatch_fn)));
             if veh_handle.is_null() {
                 return Err(Error::VehInstallFailed);
             }
-            bdbg!(b"[hwbp] VEH installed ok\n");
             Ok(HwbpEngine { veh_handle, bootstrap })
         }
     }

