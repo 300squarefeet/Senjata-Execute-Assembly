@@ -130,3 +130,41 @@ fn rva_to_offset(bytes: &[u8], e_lfanew: usize, rva: usize) -> Option<usize> {
     None
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    extern crate alloc;
+    use alloc::vec;
+
+    #[test]
+    fn detects_coreclr_marker() {
+        let mut bytes = vec![0u8; 4096];
+        let marker = b".NETCoreApp,Version=v8.0";
+        bytes[1024..1024 + marker.len()].copy_from_slice(marker);
+        assert_eq!(detect_runtime(&bytes), Some(Runtime::CoreClr));
+    }
+
+    #[test]
+    fn detects_netfx_marker() {
+        let mut bytes = vec![0u8; 4096];
+        let marker = b".NETFramework,Version=v4.8";
+        bytes[1024..1024 + marker.len()].copy_from_slice(marker);
+        assert_eq!(detect_runtime(&bytes), Some(Runtime::NetFx4));
+    }
+
+    #[test]
+    fn no_marker_returns_none() {
+        let bytes = vec![0u8; 4096];
+        assert_eq!(detect_runtime(&bytes), None);
+    }
+
+    #[test]
+    fn coreclr_wins_when_both_present() {
+        // detect_runtime checks .NETCoreApp first; modern wins.
+        let mut bytes = vec![0u8; 4096];
+        bytes[1024..1024 + 21].copy_from_slice(b".NETCoreApp,Version=v");
+        bytes[2048..2048 + 23].copy_from_slice(b".NETFramework,Version=v");
+        assert_eq!(detect_runtime(&bytes), Some(Runtime::CoreClr));
+    }
+}
+
