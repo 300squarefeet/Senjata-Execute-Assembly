@@ -24,7 +24,9 @@ args = ["build", "--release", "--target", "${TARGET}",
 script = '''
 set -euo pipefail
 mkdir -p dist
-boflink --warn-unresolved-symbols \
+boflink --mingw64 \
+        --warn-unresolved-symbols \
+        -lkernel32 -loleaut32 -lole32 \
         -o dist/${BOF_OUT} \
         target/${TARGET}/release/${BOF_LIB}
 '''
@@ -45,9 +47,11 @@ if objdump -t dist/${BOF_OUT} | grep -E "(GetProcAddress|LoadLibraryA|LoadLibrar
     echo "OPSEC FAIL: forbidden API imported"
     exit 1
 fi
-echo "==> Compiler-rt symbol scan"
-if objdump -t dist/${BOF_OUT} | grep -E '__chkstk|__udivti3|__divti3|__modti3'; then
-    echo "BUILD FAIL: compiler-rt symbol present"
+echo "==> Compiler-rt undefined-reference scan (BOF loader cannot resolve these)"
+# Only flag UNDEFINED compiler-rt refs (section *UND*). Defined ones are fine —
+# they live inside the BOF's .text from compiler_builtins.
+if objdump -t dist/${BOF_OUT} | grep -E '\*UND\*' | grep -E '__chkstk|__udivti3|__divti3|__modti3'; then
+    echo "BUILD FAIL: undefined compiler-rt reference"
     exit 1
 fi
 echo "OK"

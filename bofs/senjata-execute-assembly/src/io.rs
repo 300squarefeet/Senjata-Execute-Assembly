@@ -37,7 +37,7 @@ impl IoChannel {
                 if h == INVALID_HANDLE_VALUE {
                     return Err(BofError::Io {
                         last_error: get_last_error(),
-                        op: "CreateMailslotA",
+                        op: "i1",
                     });
                 }
                 let w = CreateFileA(
@@ -65,7 +65,7 @@ impl IoChannel {
                 if h == INVALID_HANDLE_VALUE {
                     return Err(BofError::Io {
                         last_error: get_last_error(),
-                        op: "CreateNamedPipeA",
+                        op: "i2",
                     });
                 }
                 let w = CreateFileA(

