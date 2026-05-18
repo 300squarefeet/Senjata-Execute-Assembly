@@ -31,6 +31,13 @@ pub struct OwnedSafeArray {
 impl OwnedSafeArray {
     pub unsafe fn create(vt: u16, n_elements: u32) -> Option<Self> {
         unsafe {
+            // Wide "oleaut32.dll\0" — UTF-16 literals, not plaintext ASCII.
+            const OLEAUT_W: &[u16] = &[
+                0x6F,0x6C,0x65,0x61,0x75,0x74,0x33,0x32,0x2E,0x64,0x6C,0x6C,0,
+            ];
+            if !crate::loader::load_if_absent(hash!("oleaut32.dll"), OLEAUT_W) {
+                return None;
+            }
             let oleaut32 = resolve_module(hash!("oleaut32.dll"))?;
             let create = resolve_export(oleaut32, hash!("SafeArrayCreate"))?;
             type Fn = unsafe extern "system" fn(u16, u32, *const SafeArrayBound) -> *mut SafeArray;

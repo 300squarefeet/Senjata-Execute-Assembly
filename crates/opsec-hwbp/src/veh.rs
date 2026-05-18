@@ -33,6 +33,7 @@ pub unsafe extern "system" fn dispatch(info: *mut EXCEPTION_POINTERS) -> i32 {
         match d.callback {
             CallbackKind::RipRet => {
                 if let Some(r) = find_ret_gadget(rip, 500) {
+                    ctx.Rax = 0x80070057; // E_INVALIDARG
                     ctx.Rip = r as u64;
                     ctx.EFlags |= RESUME_FLAG;
                     return EXCEPTION_CONTINUE_EXECUTION;

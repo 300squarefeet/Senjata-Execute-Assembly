@@ -10,8 +10,8 @@ pub enum BofError {
     Clr { hr: i32, op: &'static str },
     PeParse(crate::pe_parser::Error),
     Io { last_error: u32, op: &'static str },
-    DotNetCore,
     MixedModeUnsupported,
+    ArchMismatch,
     AssemblyThrew { type_name: String, message: String },
 }
 
@@ -27,11 +27,11 @@ impl BofError {
             BofError::Clr { hr, op } => format!("clr {op}: hr=0x{hr:08x}"),
             BofError::PeParse(e) => format!("pe parse: {e:?}"),
             BofError::Io { last_error, op } => format!("io {op}: err={last_error}"),
-            BofError::DotNetCore => {
-                ".NET Core/5+ not supported by legacy CLR hosting".into()
-            }
             BofError::MixedModeUnsupported => {
                 "mixed-mode (C++/CLI) assemblies are not supported".into()
+            }
+            BofError::ArchMismatch => {
+                "assembly targets x86 (32BITREQUIRED) but beacon is x64; recompile as AnyCPU or use an x64 build".into()
             }
             BofError::AssemblyThrew { type_name, message } => {
                 format!("assembly threw {type_name}: {message}")
@@ -39,3 +39,4 @@ impl BofError {
         }
     }
 }
+

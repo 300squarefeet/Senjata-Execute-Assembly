@@ -88,13 +88,10 @@ pub unsafe fn resolve_export_in_image(base: usize, name_hash: u32) -> Option<u32
     }
 }
 
-/// Translate an RVA to a file-relative byte offset using the section table.
-///
-/// For an in-memory-mapped image the VirtualAddress of each section equals
-/// the offset from the image base, so RVA == offset and this always returns
-/// `rva as usize`.  For a raw/flat file image (e.g. `include_bytes!`) the
-/// section data sits at `PointerToRawData`, not `VirtualAddress`, so we walk
-/// the section table and subtract the gap.
+/// Translate an RVA to an offset from the image base, using the section table
+/// for bounds checking.  For in-memory mapped images (the only caller),
+/// RVA == offset, so this returns `rva as usize` when the address falls inside
+/// any section.
 unsafe fn rva_to_offset(
     _base: usize,
     sections_base: usize,
@@ -103,27 +100,22 @@ unsafe fn rva_to_offset(
 ) -> Option<usize> {
     unsafe {
         // IMAGE_SECTION_HEADER is 40 bytes.
-        // Fields we need:
-        //   VirtualSize       offset +8   u32
-        //   VirtualAddress    offset +12  u32
-        //   SizeOfRawData     offset +16  u32
-        //   PointerToRawData  offset +20  u32
+        // Fields used: VirtualSize (+8), VirtualAddress (+12), SizeOfRawData (+16).
         const SECT_SIZE: usize = 40;
 
         for i in 0..n_sections {
             let sh = sections_base + i * SECT_SIZE;
-            let virtual_address  = core::ptr::read_unaligned((sh + 12) as *const u32);
-            let size_of_raw_data = core::ptr::read_unaligned((sh + 16) as *const u32);
-            let ptr_to_raw_data  = core::ptr::read_unaligned((sh + 20) as *const u32);
+            let virtual_size     = core::ptr::read_unaligned((sh + 8)  as *const u32) as usize;
+            let virtual_address  = core::ptr::read_unaligned((sh + 12) as *const u32) as usize;
+            let size_of_raw_data = core::ptr::read_unaligned((sh + 16) as *const u32) as usize;
 
-            let va       = virtual_address as usize;
-            let raw_size = size_of_raw_data as usize;
-            let raw_ptr  = ptr_to_raw_data as usize;
-
+            // Upper bound: prefer VirtualSize when non-zero, else SizeOfRawData.
+            let upper = if virtual_size > 0 { virtual_size } else { size_of_raw_data };
             let rva_us = rva as usize;
-            if rva_us >= va && (rva_us) < va + raw_size {
-                let offset_in_section = rva_us - va;
-                return Some(raw_ptr + offset_in_section);
+            if rva_us >= virtual_address && rva_us < virtual_address + upper {
+                // For in-memory mapped images, the RVA IS the offset from image base.
+                // PointerToRawData (file offset) differs from VirtualAddress on real DLLs.
+                return Some(rva_us);
             }
         }
         None

@@ -3,7 +3,7 @@ pub enum Error {
     NotPe,
     NoCor20,
     MixedMode,
-    DotNetCore,
+    ArchMismatch,
     Malformed,
 }
 
@@ -16,26 +16,36 @@ pub struct AsmInfo {
 
 const DOS_MAGIC: u16 = 0x5A4D;
 const NT_MAGIC: u32 = 0x00004550;
+const PE32_MAGIC: u16 = 0x10B;
 const PE32_PLUS_MAGIC: u16 = 0x20B;
 const COMIMAGE_FLAGS_ILONLY: u32 = 0x00000001;
+const COMIMAGE_FLAGS_32BITREQUIRED: u32 = 0x00000002;
 const METADATA_SIGNATURE: u32 = 0x424A_5342;
+const IMAGE_FILE_MACHINE_I386: u16 = 0x014C;
 
 pub fn parse(bytes: &[u8]) -> Result<AsmInfo, Error> {
     if bytes.len() < 0x40 { return Err(Error::NotPe); }
     let dos_magic = u16::from_le_bytes([bytes[0], bytes[1]]);
     if dos_magic != DOS_MAGIC { return Err(Error::NotPe); }
     let e_lfanew = u32::from_le_bytes([bytes[0x3C], bytes[0x3D], bytes[0x3E], bytes[0x3F]]) as usize;
-    if e_lfanew + 24 + 240 > bytes.len() { return Err(Error::Malformed); }
+    // Need at least PE signature (4) + COFF header (20) + optional header magic (2)
+    if e_lfanew + 26 > bytes.len() { return Err(Error::Malformed); }
     let nt_magic = u32::from_le_bytes([bytes[e_lfanew], bytes[e_lfanew+1],
                                         bytes[e_lfanew+2], bytes[e_lfanew+3]]);
     if nt_magic != NT_MAGIC { return Err(Error::NotPe); }
+
+    // Check COFF Machine field — reject x86-only assemblies (BOF is x64)
+    let machine = u16::from_le_bytes([bytes[e_lfanew+4], bytes[e_lfanew+5]]);
+
     let opt = e_lfanew + 24;
     let pe_magic = u16::from_le_bytes([bytes[opt], bytes[opt+1]]);
-    if pe_magic != PE32_PLUS_MAGIC { return Err(Error::Malformed); }
-
-    // DataDirectory[14] (COR20) is at offset 112 + 14*8 = 224 in PE32+ optional header
-    // DataDirectory[0] starts at opt+112; each entry is 8 bytes; [14] = opt+112+14*8 = opt+224
-    let cor20_rva_off = opt + 112 + 14 * 8;
+    // DataDirectory[0] starts at opt+96 (PE32) or opt+112 (PE32+); [14] = base + 14*8
+    let dd_base_offset = match pe_magic {
+        PE32_PLUS_MAGIC => 112usize,
+        PE32_MAGIC => 96usize,
+        _ => return Err(Error::Malformed),
+    };
+    let cor20_rva_off = opt + dd_base_offset + 14 * 8;
     if cor20_rva_off + 8 > bytes.len() { return Err(Error::Malformed); }
     let cor20_rva = u32::from_le_bytes([
         bytes[cor20_rva_off], bytes[cor20_rva_off+1],
@@ -53,6 +63,16 @@ pub fn parse(bytes: &[u8]) -> Result<AsmInfo, Error> {
         bytes[cor20_off+16], bytes[cor20_off+17],
         bytes[cor20_off+18], bytes[cor20_off+19]]);
     if flags & COMIMAGE_FLAGS_ILONLY == 0 { return Err(Error::MixedMode); }
+
+    // Reject x86 assemblies: PE32 with Machine==I386 AND CorFlags 32BITREQUIRED set.
+    // AnyCPU assemblies are PE32 + I386 but do NOT have 32BITREQUIRED; they load fine
+    // in an x64 process. Only truly x86-locked assemblies have the flag set.
+    if machine == IMAGE_FILE_MACHINE_I386
+        && pe_magic == PE32_MAGIC
+        && (flags & COMIMAGE_FLAGS_32BITREQUIRED) != 0
+    {
+        return Err(Error::ArchMismatch);
+    }
 
     let metadata_off = rva_to_offset(bytes, e_lfanew, metadata_rva).ok_or(Error::Malformed)?;
     if metadata_off + 16 > bytes.len() { return Err(Error::Malformed); }
@@ -76,7 +96,7 @@ pub fn parse(bytes: &[u8]) -> Result<AsmInfo, Error> {
     match major {
         2 => Ok(AsmInfo { version: ClrVersion::V2 }),
         4 => Ok(AsmInfo { version: ClrVersion::V4 }),
-        _ => Err(Error::DotNetCore),
+        _ => Err(Error::Malformed),
     }
 }
 
@@ -103,4 +123,5 @@ fn rva_to_offset(bytes: &[u8], e_lfanew: usize, rva: usize) -> Option<usize> {
     }
     None
 }
+
 

