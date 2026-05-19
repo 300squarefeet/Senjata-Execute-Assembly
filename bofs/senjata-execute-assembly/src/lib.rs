@@ -124,6 +124,11 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         };
 
         // save_cleanup_point acts like setjmp: exit-trap VEH redirects back here.
+        // There are two paths back to the code after this block:
+        //   A) Assembly's Main() returns normally → dispatch() returns, falls through.
+        //   B) Assembly calls Environment.Exit() → RtlExitUserProcess HWBP fires,
+        //      RIP/RSP redirected back to this label, invoked==true, if-block skipped.
+        // drain() must run in BOTH paths, so it lives outside the if-block.
         let mut invoked = false;
         let (resume_rip, resume_rsp) = cleanup::save_cleanup_point();
         if !invoked {
@@ -146,14 +151,24 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
                 &a.app_domain, &a.asm_args, a.entry_point,
                 a.mode, &a.main_name,
             );
-            // Always drain stdout, even on error — the assembly may have
-            // printed diagnostic info before throwing.
+            // Path A: normal Main() return. drain() here captures output for
+            // tools that return without calling Environment.Exit(). The call
+            // after the if-block is a no-op (pipe already closed+drained).
             if let Ok(output) = io_ch.drain() {
                 if !output.is_empty() {
                     rustbof::eprintln!("\n{}", output);
                 }
             }
             dispatch_result?;
+        }
+        // Path B: Environment.Exit() fired the HWBP trap and jumped here.
+        // .NET flushes Console.Out before calling RtlExitUserProcess, so the
+        // kernel pipe buffer already has all output. drain() reads it now.
+        // For path A this is a safe no-op: write handle is already closed.
+        if let Ok(output) = io_ch.drain() {
+            if !output.is_empty() {
+                rustbof::eprintln!("\n{}", output);
+            }
         }
         let _ = invoked;
     }
