@@ -46,20 +46,7 @@ pub unsafe fn run(
         let host = start(info)?;
         let domain = create_domain(&host, app_domain)?;
         let assembly = load_assembly(&domain, asm_bytes)?;
-        let result = invoke(&assembly, asm_args, entry_point_flag);
-        // Unload the AppDomain so the CLR runs finalizers synchronously.
-        // This flushes Console.Out's StreamWriter buffer to the pipe before
-        // drain() reads it — without this, tools that return from Main()
-        // normally (no Environment.Exit) produce no output because the
-        // managed StreamWriter buffer never reaches the kernel pipe buffer.
-        let h = host.as_raw();
-        let d = domain.as_raw() as *mut c_void;
-        let _ = ((*(*h).vtbl).unload_domain)(h as *mut c_void, d);
-        // Forget the domain and assembly ComPtrs — Release on an unloaded
-        // domain's COM objects is unsafe; the CLR has already cleaned them up.
-        core::mem::forget(assembly);
-        core::mem::forget(domain);
-        result
+        invoke(&assembly, asm_args, entry_point_flag)
     }
 }
 
@@ -95,14 +82,7 @@ pub unsafe fn run_multi(
             .map(|(_, b)| b.as_slice())
             .ok_or(BofError::Clr { hr: -1, op: "mNoMain" })?;
         let assembly = load_assembly(&domain, main_bytes)?;
-        let result = invoke(&assembly, asm_args, entry_point_flag);
-        let h = host.as_raw();
-        let d = domain.as_raw() as *mut c_void;
-        let _ = ((*(*h).vtbl).unload_domain)(h as *mut c_void, d);
-        core::mem::forget(_deps);
-        core::mem::forget(assembly);
-        core::mem::forget(domain);
-        result
+        invoke(&assembly, asm_args, entry_point_flag)
     }
 }
 

@@ -76,6 +76,12 @@ impl IoChannel {
                     FILE_ATTRIBUTE_NORMAL,
                     core::ptr::null_mut(),
                 );
+                if w == INVALID_HANDLE_VALUE {
+                    return Err(BofError::Io {
+                        last_error: get_last_error(),
+                        op: "i3",
+                    });
+                }
                 (h, w, Mode::Pipe)
             };
 

