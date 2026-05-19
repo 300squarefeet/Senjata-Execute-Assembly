@@ -5,7 +5,6 @@ pub enum Error {
     MixedMode,
     ArchMismatch,
     Malformed,
-    TargetFrameworkUnknown,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -87,8 +86,9 @@ pub fn parse(bytes: &[u8]) -> Result<AsmInfo, Error> {
 
     // Both .NET Framework and .NET 6+ use 'v4.0.30319' in the metadata root —
     // the real signal lives in the TargetFrameworkAttribute string embedded by
-    // every modern compiler.
-    let runtime = detect_runtime(bytes).ok_or(Error::TargetFrameworkUnknown)?;
+    // every modern compiler. Old-style project files (pre-SDK csproj, net40/461)
+    // may omit it; CoreCLR always embeds it, so absence implies NetFx4.
+    let runtime = detect_runtime(bytes).unwrap_or(Runtime::NetFx4);
     Ok(AsmInfo { runtime })
 }
 

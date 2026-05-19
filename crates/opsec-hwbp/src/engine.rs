@@ -13,7 +13,9 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32, TH32CS_SNAPTHREAD,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcessId, OpenThread, THREAD_ALL_ACCESS};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcessId, GetCurrentThread, OpenThread, THREAD_ALL_ACCESS,
+};
 
 #[derive(Debug)]
 pub enum Error {
@@ -127,10 +129,21 @@ impl HwbpEngine {
         enable: bool,
     ) -> Result<(), Error> {
         unsafe {
+            // Always apply to the current thread first via its pseudo-handle
+            // (0xFFFFFFFFFFFFFFFE). The CLR runs synchronously on this thread,
+            // so this alone is sufficient for AMSI/ETW/exit-trap interception.
+            // Do NOT call CloseHandle on a pseudo-handle.
+            let cur = GetCurrentThread();
+            self.set_dr_on_thread(cur, address, slot, enable);
+
+            // Best-effort: also apply to all other process threads so the hook
+            // catches any CLR helper threads. If CreateToolhelp32Snapshot fails
+            // (restricted context, Defender interference), we still have the
+            // current-thread hook above — never hard-fail here.
             let pid = GetCurrentProcessId();
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
             if snap == INVALID_HANDLE_VALUE {
-                return Err(Error::KernelHandleFailed);
+                return Ok(());
             }
 
             let mut te: THREADENTRY32 = core::mem::zeroed();

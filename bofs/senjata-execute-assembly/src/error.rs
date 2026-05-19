@@ -11,7 +11,6 @@ pub enum BofError {
     PeParse(crate::pe_parser::Error),
     Io { last_error: u32, op: &'static str },
     MixedModeUnsupported,
-    TargetFrameworkUnknown,
     ArchMismatch,
     AssemblyThrew { type_name: String, message: String },
 }
@@ -30,11 +29,6 @@ impl BofError {
             BofError::Io { last_error, op } => format!("io {op}: err={last_error}"),
             BofError::MixedModeUnsupported => {
                 "mixed-mode (C++/CLI) assemblies are not supported".into()
-            }
-            BofError::TargetFrameworkUnknown => {
-                "could not detect TargetFrameworkAttribute in assembly bytes; \
-                 rebuild with `TargetFramework` set (net48 / net6.0 / etc.) \
-                 or use a fresh Roslyn compilation".into()
             }
             BofError::ArchMismatch => {
                 "assembly targets x86 (32BITREQUIRED) but beacon is x64; recompile as AnyCPU or use an x64 build".into()
