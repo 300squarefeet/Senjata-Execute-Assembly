@@ -12,6 +12,12 @@ pub struct Args {
     pub slot_name: String,
     pub pipe_name: String,
     pub asm_args: String,
+    /// 0 = single-file (asm_bytes is the assembly PE)
+    /// 1 = multi-file (asm_bytes is `[n: u32][name_len: u32][name][body_len: u32][body]...`)
+    pub mode: u32,
+    /// In multi-file mode, the filename within the bundle that is the main executable.
+    /// Empty in single-file mode.
+    pub main_name: String,
     pub asm_bytes: Vec<u8>,
 }
 
@@ -30,6 +36,8 @@ pub fn parse(raw: *mut u8, len: usize) -> Result<Args, Error> {
     let slot_name = p.get_str().into();
     let pipe_name = p.get_str().into();
     let asm_args = p.get_str().into();
+    let mode = p.get_int() as u32;
+    let main_name = p.get_str().into();
     let asm_bytes = p.get_bytes().to_vec();
     Ok(Args {
         app_domain,
@@ -40,6 +48,8 @@ pub fn parse(raw: *mut u8, len: usize) -> Result<Args, Error> {
         slot_name,
         pipe_name,
         asm_args,
+        mode,
+        main_name,
         asm_bytes,
     })
 }

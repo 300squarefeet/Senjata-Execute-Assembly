@@ -9,6 +9,18 @@ pub struct AppDomainVtbl {
     // IDispatch (4) + ToString..Load_2 (38) = 42 slots before Load_3 (index 45)
     pub _pad1: [usize; 42],
     pub load_3: unsafe extern "system" fn(*mut c_void, *mut SafeArray, *mut *mut c_void) -> i32, // index 45
+    // Load_4..ExecuteAssembly_2 — 6 slots between Load_3 and ExecuteAssembly_3 (index 52)
+    pub _pad2: [usize; 6],
+    /// ExecuteAssembly(string path, Evidence sec, string[] args) → int.
+    /// Used as the disk-fallback when Load_3 (byte[]) returns BAD_FORMAT
+    /// for ILMerge/Costura-merged binaries.
+    pub execute_assembly_3: unsafe extern "system" fn(
+        *mut c_void,           // this
+        *const u16,            // BSTR path (NUL-term wide is acceptable)
+        *mut c_void,           // Evidence (NULL OK)
+        *mut SafeArray,        // string[] args (SafeArray of BSTRs)
+        *mut i32,              // [out, retval] exit code
+    ) -> i32, // index 52
 }
 
 #[repr(C)]
