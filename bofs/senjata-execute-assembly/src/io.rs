@@ -95,7 +95,7 @@ impl IoChannel {
         }
     }
 
-    pub unsafe fn drain(&self) -> Result<String, BofError> {
+    pub unsafe fn drain(&mut self) -> Result<String, BofError> {
         unsafe {
             let mut out = Vec::with_capacity(65536);
             let mut buf = [0u8; 4096];
@@ -113,26 +113,44 @@ impl IoChannel {
                     if count == 0 || next_size == 0xFFFFFFFF {
                         break;
                     }
-                    let mut read = 0u32;
+                    let mut nread = 0u32;
                     ReadFile(
                         self.handle,
                         buf.as_mut_ptr(),
                         buf.len() as u32,
-                        &mut read,
+                        &mut nread,
                         core::ptr::null_mut(),
                     );
-                    out.extend_from_slice(&buf[..read as usize]);
+                    out.extend_from_slice(&buf[..nread as usize]);
                 },
                 Mode::Pipe => {
-                    let mut read = 0u32;
-                    ReadFile(
-                        self.handle,
-                        buf.as_mut_ptr(),
-                        buf.len() as u32,
-                        &mut read,
-                        core::ptr::null_mut(),
-                    );
-                    out.extend_from_slice(&buf[..read as usize]);
+                    // Restore stdout first so any last-gasp CLR writes don't
+                    // go to a handle we're about to close.
+                    if self.saved_stdout != INVALID_HANDLE_VALUE {
+                        SetStdHandle(STD_OUTPUT_HANDLE, self.saved_stdout);
+                        self.saved_stdout = INVALID_HANDLE_VALUE;
+                    }
+                    // Closing the write end signals EOF to the reader side.
+                    // ReadFile will return all buffered data then break with
+                    // ERROR_BROKEN_PIPE once the kernel buffer is exhausted.
+                    if self.write_handle != INVALID_HANDLE_VALUE {
+                        CloseHandle(self.write_handle);
+                        self.write_handle = INVALID_HANDLE_VALUE;
+                    }
+                    loop {
+                        let mut nread = 0u32;
+                        let ok = ReadFile(
+                            self.handle,
+                            buf.as_mut_ptr(),
+                            buf.len() as u32,
+                            &mut nread,
+                            core::ptr::null_mut(),
+                        );
+                        if ok == 0 || nread == 0 {
+                            break;
+                        }
+                        out.extend_from_slice(&buf[..nread as usize]);
+                    }
                 }
             }
             Ok(String::from_utf8_lossy(&out).into_owned())
@@ -143,8 +161,12 @@ impl IoChannel {
 impl Drop for IoChannel {
     fn drop(&mut self) {
         unsafe {
-            SetStdHandle(STD_OUTPUT_HANDLE, self.saved_stdout);
-            CloseHandle(self.write_handle);
+            if self.saved_stdout != INVALID_HANDLE_VALUE {
+                SetStdHandle(STD_OUTPUT_HANDLE, self.saved_stdout);
+            }
+            if self.write_handle != INVALID_HANDLE_VALUE {
+                CloseHandle(self.write_handle);
+            }
             CloseHandle(self.handle);
         }
     }

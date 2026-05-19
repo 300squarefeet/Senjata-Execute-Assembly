@@ -124,9 +124,9 @@ sub senjata_run_async {
     });
 
     beacon_execute_postex_job($bid, $pid, $dll_data, $packed_arguments, $callback);
-    # 5-minute read timeout — CLR assemblies like Rubeus can take several minutes
+    # 2-hour timeout — long-running tools like Snaffler can run for tens of minutes
     bread_pipe($bid, "ANONYMOUS_BYTESTREAM", "CALLBACK_POSTEX_KIT",
-        "senjata-execute-assembly", $output_pipe, 0, 300000, $null);
+        "senjata-execute-assembly", $output_pipe, 0, 7200000, $null);
 
     return 1;
 }

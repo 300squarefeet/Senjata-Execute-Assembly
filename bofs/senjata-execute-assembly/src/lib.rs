@@ -76,7 +76,7 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             None
         };
 
-        let io_ch = io::IoChannel::open(a.mailslot, &a.slot_name, &a.pipe_name)?;
+        let mut io_ch = io::IoChannel::open(a.mailslot, &a.slot_name, &a.pipe_name)?;
 
         // Slot 3: block AllocConsole unconditionally. The .NET Framework CLR
         // calls AllocConsole when initialising stdio for a console-subsystem PE
