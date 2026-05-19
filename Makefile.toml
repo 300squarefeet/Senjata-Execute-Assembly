@@ -113,6 +113,7 @@ dependencies = ["validate"]
 script = '''
 set -euo pipefail
 cp bofs/senjata-execute-assembly/aggressor/senjata-execute-assembly.cna dist/ 2>/dev/null || true
+cp arsenal-kit/kits/postex/artifacts/async-execute/async-execute.x64.dll dist/ 2>/dev/null || true
 '''
 
 [tasks.test]
