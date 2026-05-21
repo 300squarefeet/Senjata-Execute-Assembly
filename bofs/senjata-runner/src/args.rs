@@ -1,10 +1,21 @@
-//! Postex DLL args parser. Wire format mirrors
-//! `bofs/senjata-execute-assembly/src/args.rs` — the .cna packs both
-//! artefacts identically.
+//! Postex DLL args parser.
+//!
+//! The .cna packs args via `bof_pack($bid, "ziiiizzzizb", ...)`. CS adds
+//! its own 4-byte total-size header before the packed fields; the
+//! correct way to read these bytes is via Beacon's `BeaconDataParse` /
+//! `BeaconDataInt` / `BeaconDataExtract` APIs (provided to the DLL via
+//! smartinject IAT rewrite). The hand-rolled byte reader in v0.3.x got
+//! this wrong — it consumed the bof_pack size header as if it were
+//! `app_domain`'s length prefix → garbage values → Truncated. Replaced
+//! with BeaconAPI calls (same approach as the BOF's `rustbof::data`).
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_void;
+
+use crate::beacon_api::{
+    BeaconDataExtract, BeaconDataInt, BeaconDataLength, BeaconDataParse, Datap,
+};
 
 #[derive(Debug)]
 pub struct Args {
@@ -23,68 +34,77 @@ pub struct Args {
 
 #[derive(Debug)]
 pub enum Error {
+    /// Buffer pointer was null or size was zero / negative.
+    EmptyBuffer,
+    /// All fields extracted but the assembly blob came back empty —
+    /// wire-format mismatch between sender and parser.
     Truncated,
 }
 
-/// Read a length-prefixed u32-LE.
-unsafe fn read_u32(ptr: *const u8, off: &mut usize, end: usize) -> Result<u32, Error> {
+/// Extract a `z` field (length-prefixed C string including NUL) as an
+/// owned `String`. Returns empty if the buffer is dry.
+unsafe fn extract_str(parser: *mut Datap) -> String {
     unsafe {
-        if *off + 4 > end {
-            return Err(Error::Truncated);
+        let mut size: i32 = 0;
+        let ptr = BeaconDataExtract(parser, &mut size);
+        if ptr.is_null() || size <= 0 {
+            return String::new();
         }
-        let v = u32::from_le_bytes([
-            *ptr.add(*off),
-            *ptr.add(*off + 1),
-            *ptr.add(*off + 2),
-            *ptr.add(*off + 3),
-        ]);
-        *off += 4;
-        Ok(v)
+        // Strip the trailing NUL that bof_pack's `z` includes.
+        let raw_len = size as usize;
+        let slice_len = if raw_len > 0 && *ptr.add(raw_len - 1) == 0 {
+            raw_len - 1
+        } else {
+            raw_len
+        };
+        let slice = core::slice::from_raw_parts(ptr, slice_len);
+        String::from_utf8_lossy(slice).into_owned()
     }
 }
 
-/// Read a `z` (length-prefixed C string).
-unsafe fn read_str(ptr: *const u8, off: &mut usize, end: usize) -> Result<String, Error> {
+/// Extract a `b` field (length-prefixed binary blob) as an owned Vec.
+unsafe fn extract_bytes(parser: *mut Datap) -> Vec<u8> {
     unsafe {
-        let n = read_u32(ptr, off, end)? as usize;
-        if *off + n > end {
-            return Err(Error::Truncated);
+        let mut size: i32 = 0;
+        let ptr = BeaconDataExtract(parser, &mut size);
+        if ptr.is_null() || size <= 0 {
+            return Vec::new();
         }
-        let slice = core::slice::from_raw_parts(ptr.add(*off), n.saturating_sub(1));
-        let s = String::from_utf8_lossy(slice).into_owned();
-        *off += n;
-        Ok(s)
+        core::slice::from_raw_parts(ptr, size as usize).to_vec()
     }
 }
 
-/// Read a `b` (length-prefixed bytes).
-unsafe fn read_bytes(ptr: *const u8, off: &mut usize, end: usize) -> Result<Vec<u8>, Error> {
-    unsafe {
-        let n = read_u32(ptr, off, end)? as usize;
-        if *off + n > end {
-            return Err(Error::Truncated);
-        }
-        let v = core::slice::from_raw_parts(ptr.add(*off), n).to_vec();
-        *off += n;
-        Ok(v)
-    }
-}
-
+/// Parse the .cna's `bof_pack("ziiiizzzizb", ...)` payload via Beacon's
+/// data parser. `blob` is `lpReserved` from DllEntryPoint(DLL_POSTEX_ATTACH);
+/// `len` is `gPostexArgumentsBuffer.UserArgumentBufferSize`.
 pub unsafe fn parse(blob: *mut c_void, len: usize) -> Result<Args, Error> {
     unsafe {
-        let ptr = blob as *const u8;
-        let mut off = 0usize;
-        let app_domain = read_str(ptr, &mut off, len)?;
-        let amsi = read_u32(ptr, &mut off, len)? != 0;
-        let etw = read_u32(ptr, &mut off, len)? != 0;
-        let mailslot = read_u32(ptr, &mut off, len)? != 0;
-        let entry_point = read_u32(ptr, &mut off, len)?;
-        let slot_name = read_str(ptr, &mut off, len)?;
-        let pipe_name = read_str(ptr, &mut off, len)?;
-        let asm_args = read_str(ptr, &mut off, len)?;
-        let mode = read_u32(ptr, &mut off, len)?;
-        let main_name = read_str(ptr, &mut off, len)?;
-        let asm_bytes = read_bytes(ptr, &mut off, len)?;
+        if blob.is_null() || len == 0 {
+            return Err(Error::EmptyBuffer);
+        }
+        let mut parser: Datap = core::mem::zeroed();
+        BeaconDataParse(&mut parser, blob as *const u8, len as i32);
+
+        // Field order matches the .cna's bof_pack format
+        // "ziiiizzzizb": app_domain, amsi, etw, mailslot, entry_point,
+        // slot_name, pipe_name, asm_args, mode, main_name, asm_bytes.
+        let app_domain  = extract_str(&mut parser);
+        let amsi        = BeaconDataInt(&mut parser) != 0;
+        let etw         = BeaconDataInt(&mut parser) != 0;
+        let mailslot    = BeaconDataInt(&mut parser) != 0;
+        let entry_point = BeaconDataInt(&mut parser) as u32;
+        let slot_name   = extract_str(&mut parser);
+        let pipe_name   = extract_str(&mut parser);
+        let asm_args    = extract_str(&mut parser);
+        let mode        = BeaconDataInt(&mut parser) as u32;
+        let main_name   = extract_str(&mut parser);
+        let asm_bytes   = extract_bytes(&mut parser);
+
+        if asm_bytes.is_empty() {
+            let _remaining = BeaconDataLength(&mut parser);
+            return Err(Error::Truncated);
+        }
+
         Ok(Args {
             app_domain,
             amsi,
