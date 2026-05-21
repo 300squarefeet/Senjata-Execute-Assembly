@@ -35,33 +35,6 @@ const V4_VERSION: &[u16] = &[
     b'3' as u16, b'0' as u16, b'3' as u16, b'1' as u16, b'9' as u16, 0,
 ];
 
-const FLUSH_KEY: [u8; 16] = [
-    0xA9, 0x3F, 0x17, 0xC4, 0xEE, 0x0B, 0x8D, 0x51,
-    0x22, 0x6A, 0x7F, 0x04, 0x9C, 0xB3, 0xE7, 0x56,
-];
-const FLUSH_XOR: &[u8] = include_bytes!("../../../bofs/senjata-execute-assembly/assets/flush.dll.xor");
-
-fn decrypt_flush() -> Vec<u8> {
-    FLUSH_XOR
-        .iter()
-        .enumerate()
-        .map(|(i, &b)| b ^ FLUSH_KEY[i % FLUSH_KEY.len()])
-        .collect()
-}
-
-fn do_flush(domain: &ComPtr<AppDomain>, tag: &str, handle_hex: &str) {
-    let bytes = decrypt_flush();
-    match unsafe { load_assembly(domain, &bytes) } {
-        Ok(flush_asm) => {
-            match unsafe { invoke(&flush_asm, handle_hex, 0) } {
-                Ok(()) => rustbof::eprintln!("[dbg] flush {} ok", tag),
-                Err(e) => rustbof::eprintln!("[dbg] flush {} invoke err: {}", tag, e.format()),
-            }
-        }
-        Err(e) => rustbof::eprintln!("[dbg] flush {} load err: {}", tag, e.format()),
-    }
-}
-
 unsafe fn stop_clr(host: &ComPtr<ICorRuntimeHost>) {
     unsafe {
         let h = host.as_raw();
@@ -89,13 +62,13 @@ pub unsafe fn run(
         // replaces Console.Out/Error.  This is the ONLY path that survives
         // Beacon hosts that ignore SetStdHandle.
         let handle_hex = format!("{:x}", pipe_handle);
-        do_flush(&domain, "pre", &handle_hex);
+        crate::flush::do_flush(&domain, "pre", &handle_hex);
         let assembly = load_assembly(&domain, asm_bytes)?;
         let result = invoke(&assembly, asm_args, entry_point_flag);
         // Post-flush: re-arm Console.Out/Error in case the user assembly
         // replaced them, and ensure any remaining buffered data is written
         // before drain() closes the pipe write end.
-        do_flush(&domain, "post", &handle_hex);
+        crate::flush::do_flush(&domain, "post", &handle_hex);
         // Stop the CLR execution engine so background managed threads cannot
         // call ExitProcess after this BOF returns control to Beacon.
         stop_clr(&host);
@@ -118,7 +91,7 @@ pub unsafe fn run_multi(
         let host = start(info)?;
         let domain = create_domain(&host, app_domain)?;
         let handle_hex = format!("{:x}", pipe_handle);
-        do_flush(&domain, "pre", &handle_hex);
+        crate::flush::do_flush(&domain, "pre", &handle_hex);
 
         // Keep ComPtr<Assembly> values alive in a Vec — calling Release on
         // them too early can evict the managed Assembly from the AppDomain
@@ -140,7 +113,7 @@ pub unsafe fn run_multi(
             .ok_or(BofError::Clr { hr: -1, op: "mNoMain" })?;
         let assembly = load_assembly(&domain, main_bytes)?;
         let result = invoke(&assembly, asm_args, entry_point_flag);
-        do_flush(&domain, "post", &handle_hex);
+        crate::flush::do_flush(&domain, "post", &handle_hex);
         stop_clr(&host);
         result
     }
@@ -226,7 +199,7 @@ unsafe fn create_domain(
     }
 }
 
-unsafe fn load_assembly(
+pub(crate) unsafe fn load_assembly(
     domain: &ComPtr<AppDomain>,
     asm: &[u8],
 ) -> Result<ComPtr<Assembly>, BofError> {
@@ -247,7 +220,7 @@ unsafe fn load_assembly(
     }
 }
 
-unsafe fn invoke(
+pub(crate) unsafe fn invoke(
     asm: &ComPtr<Assembly>,
     args_str: &str,
     _entry_point: u32,
