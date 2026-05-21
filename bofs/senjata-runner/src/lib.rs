@@ -34,11 +34,11 @@ fn panic(_: &PanicInfo) -> ! {
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn postex_main(data: *mut u8, len: i32) {
     unsafe {
-        // Phase 3: scaffold only — resolve BeaconAPI, print hello, return.
         let api = beacon_api::parse(data, len as usize);
-        api.printf(
+        // Sanity-print: confirms reflective load + table parse succeeded.
+        api.output(
             beacon_api::CALLBACK_OUTPUT,
-            b"[runner] hello from senjata-runner\0".as_ptr(),
+            b"[runner] hello from senjata-runner (phase 3 scaffold)\n",
         );
     }
 }

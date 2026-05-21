@@ -7,6 +7,7 @@ use core::ffi::c_void;
 
 /// First arg to BeaconPrintf — CS callback ID.
 pub const CALLBACK_OUTPUT: i32 = 0x00;
+#[allow(dead_code)]
 pub const CALLBACK_ERROR: i32 = 0x0d;
 
 type BeaconPrintfFn = unsafe extern "C" fn(ty: i32, fmt: *const u8, ...);
