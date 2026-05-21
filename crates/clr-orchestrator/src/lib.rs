@@ -72,11 +72,15 @@ pub unsafe fn orchestrate(
 
         // Capture the cleanup point for the exit-trap (re-entry after
         // Environment.Exit). dispatch::dispatch installs the trap itself.
-        let mut invoked = false;
         let (resume_rip, resume_rsp) = cleanup::save_cleanup_point();
-        if !invoked {
-            invoked = true;
-
+        // Two paths land here:
+        //   A. First entry: dispatch the assembly, then drain.
+        //   B. Re-entry from RtlExitUserProcess exit-trap: dispatch_result?
+        //      unwound via the cleanup-RIP/RSP rewrite; we resume here for
+        //      a final drain.
+        // Path A executes the dispatch block; path B falls through to the
+        // trailing drain.
+        {
             // Install the exit-trap on RtlExitUserProcess (slot 2).
             let ntdll_h = opsec_strcrypt::hash!("ntdll.dll");
             let exit_h = opsec_strcrypt::hash!("RtlExitUserProcess");
@@ -111,14 +115,13 @@ pub unsafe fn orchestrate(
             }
             dispatch_result?;
         }
-        // Path B: Environment.Exit trap re-entered here. Drain again — no-op
-        // for path A.
+        // Trailing drain — covers path B (no-op for path A, which already
+        // drained).
         if let Ok(output) = io_ch.drain() {
             if !output.is_empty() {
                 rustbof::eprintln!("\n{}", output);
             }
         }
-        let _ = invoked;
         Ok(())
     }
 }
