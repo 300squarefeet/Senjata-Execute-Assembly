@@ -27,8 +27,10 @@ pub mod flush;
 #[cfg(target_os = "windows")]
 pub mod bypasses;
 
-/// Input to `orchestrate`. Both BOF and postex DLL pack their wire-format
-/// args into this struct after parsing.
+/// Parsed-args bag passed to `orchestrate`. Both the BOF (inline mode)
+/// and the postex DLL (sacrificial mode) parse their wire-format args
+/// into this struct after parsing. Borrows live for the duration of the
+/// `orchestrate` call — the underlying arg blob must outlive the call.
 #[cfg(target_os = "windows")]
 pub struct OrchestrateInput<'a> {
     pub app_domain: &'a str,
@@ -44,8 +46,31 @@ pub struct OrchestrateInput<'a> {
     pub asm_bytes: &'a [u8],
 }
 
-/// End-to-end runner. PEB init / HwbpEngine init must be done by the caller
-/// (their lifetime crosses the call). Everything CLR-related is owned here.
+/// End-to-end CLR-host runner. Used by the BOF (inline mode) and the
+/// postex DLL (sacrificial mode).
+///
+/// # Safety
+///
+/// Caller must guarantee:
+/// - PEB walker (`opsec_peb`) is in a valid state. No explicit init is
+///   required; PEB is process-global.
+/// - `engine: &HwbpEngine` is freshly initialized via `HwbpEngine::init()`
+///   on the calling thread and stays alive for the duration of the call.
+///   The engine installs HWBP descriptors on threads as needed; do not
+///   share one engine across BOF/runner instances.
+/// - `input.asm_bytes` outlives the call and is a valid managed PE (single-
+///   file mode) or a valid multi-file blob (mode == 1; see
+///   `netfx::parse_multi_blob` for the layout).
+/// - Single-threaded entry. The orchestrator installs and removes HWBP
+///   descriptors via indirect syscalls; concurrent entry from another
+///   thread of the same process would race on the engine state.
+/// - The host process can tolerate `Console.Out` redirection — for the
+///   BOF this means Beacon's process, for the postex DLL it's a fresh
+///   sacrificial.
+///
+/// On `Environment.Exit` inside the managed code, the exit-trap rewrites
+/// RIP/RSP back to the cleanup point captured before dispatch; the
+/// function then drains any remaining output and returns `Ok(())`.
 #[cfg(target_os = "windows")]
 pub unsafe fn orchestrate(
     input: &OrchestrateInput<'_>,
