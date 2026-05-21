@@ -66,6 +66,7 @@ pub unsafe fn run(
         // Beacon hosts that ignore SetStdHandle.
         let handle_hex = format!("{:x}", pipe_handle);
         crate::flush::do_flush(&domain, "pre", &handle_hex);
+        crate::nlog::do_nlog_config(&domain);
         let assembly = load_assembly(&domain, asm_bytes)?;
         let result = invoke(&assembly, asm_args, entry_point_flag);
         // Post-flush: re-arm Console.Out/Error in case the user assembly
@@ -95,6 +96,7 @@ pub unsafe fn run_multi(
         let domain = create_domain(&host, app_domain)?;
         let handle_hex = format!("{:x}", pipe_handle);
         crate::flush::do_flush(&domain, "pre", &handle_hex);
+        crate::nlog::do_nlog_config(&domain);
 
         // Keep ComPtr<Assembly> values alive in a Vec — calling Release on
         // them too early can evict the managed Assembly from the AppDomain
