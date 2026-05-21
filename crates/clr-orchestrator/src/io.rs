@@ -210,13 +210,17 @@ impl IoChannel {
 impl Drop for IoChannel {
     fn drop(&mut self) {
         unsafe {
+            crate::dlog2(b"[io] IoChannel::drop SetStdHandle");
             if self.saved_stdout != INVALID_HANDLE_VALUE {
                 SetStdHandle(STD_OUTPUT_HANDLE, self.saved_stdout);
             }
+            crate::dlog2(b"[io] IoChannel::drop CloseHandle(write)");
             if self.write_handle != INVALID_HANDLE_VALUE {
                 CloseHandle(self.write_handle);
             }
+            crate::dlog2(b"[io] IoChannel::drop CloseHandle(read)");
             CloseHandle(self.handle);
+            crate::dlog2(b"[io] IoChannel::drop done");
         }
     }
 }

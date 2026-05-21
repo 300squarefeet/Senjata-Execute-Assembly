@@ -279,6 +279,8 @@ unsafe fn orchestrate_internal(
             );
             dlog(input, b"[orch]   dispatch returned");
 
+            dlog(input, b"[orch] (about to leave inner block; exit_trap will drop)");
+
             // Path A: assembly Main returned normally.
             #[cfg(feature = "debug-io")]
             io_ch.diag_write(b"\n[RUST_END]\n");
@@ -295,6 +297,7 @@ unsafe fn orchestrate_internal(
             }
             dispatch_result?;
         }
+        dlog(input, b"[orch] inner block exited (exit_trap dropped)");
         // Trailing drain — covers path B (no-op for path A, which already
         // drained). Streaming mode skips entirely; the reader thread sees
         // EOF when this function returns and `io_ch` is dropped.
@@ -305,6 +308,7 @@ unsafe fn orchestrate_internal(
                 }
             }
         }
+        dlog(input, b"[orch] about to return Ok (io_ch + bypasses will Drop)");
         Ok(())
     }
 }
