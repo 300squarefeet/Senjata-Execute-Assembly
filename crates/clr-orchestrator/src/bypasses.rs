@@ -4,7 +4,8 @@
 //! Slot numbering convention used by the orchestrator:
 //!   0 → ETW (NtTraceControl)
 //!   1 → AMSI (AmsiScanBuffer)
-//!   2 → exit-trap (RtlExitUserProcess) — installed lazily inside dispatch
+//!   2 → exit-trap (RtlExitUserProcess) — installed in `orchestrate()`
+//!         after cleanup-RIP/RSP capture, before the dispatch call.
 //!   3 → AllocConsole
 
 use crate::error::OrchestratorError;
