@@ -43,6 +43,7 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             mode: a.mode,
             main_name: &a.main_name,
             asm_bytes: &a.asm_bytes,
+            log_fn: None,
         };
         clr_orchestrator::orchestrate(&input, &engine)?;
     }

