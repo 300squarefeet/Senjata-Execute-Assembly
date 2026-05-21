@@ -3,7 +3,7 @@
 
 pub mod args;
 #[cfg(target_os = "windows")]
-pub mod cleanup;
+pub use clr_orchestrator::cleanup;
 #[cfg(target_os = "windows")]
 pub mod clr;
 #[cfg(target_os = "windows")]
