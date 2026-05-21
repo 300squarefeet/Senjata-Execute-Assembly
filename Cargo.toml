@@ -12,6 +12,7 @@ members = [
     "crates/opsec-coreclr",
     "crates/clr-orchestrator",
     "bofs/senjata-execute-assembly",
+    "bofs/senjata-runner",
 ]
 
 [workspace.package]

