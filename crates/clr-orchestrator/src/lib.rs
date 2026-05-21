@@ -99,6 +99,36 @@ pub(crate) fn dlog2(msg: &[u8]) {
     }
 }
 
+/// Emit `label` followed by a hex-formatted u32 (e.g. "label 0xdeadbeef\n").
+/// No allocation; writes via two calls to the underlying log_fn.
+#[cfg(target_os = "windows")]
+pub(crate) fn dlog2_hex(label: &[u8], value: u32) {
+    let v = DLOG_SLOT.load(core::sync::atomic::Ordering::Relaxed);
+    if v == 0 {
+        return;
+    }
+    let f: DiagLogFn = unsafe { core::mem::transmute(v) };
+    // Format `label 0xXXXXXXXX` into a stack buffer.
+    let mut buf = [0u8; 80];
+    let mut i = 0;
+    for &b in label {
+        if i >= buf.len() { break; }
+        buf[i] = b;
+        i += 1;
+    }
+    if i + 11 < buf.len() {
+        buf[i] = b' '; i += 1;
+        buf[i] = b'0'; i += 1;
+        buf[i] = b'x'; i += 1;
+        for shift in (0..32).step_by(4).rev() {
+            let nibble = ((value >> shift) & 0xF) as u8;
+            buf[i] = if nibble < 10 { b'0' + nibble } else { b'a' + (nibble - 10) };
+            i += 1;
+        }
+    }
+    unsafe { f(buf.as_ptr(), i) };
+}
+
 /// Caller-supplied hook for streaming mode: receives the pipe-read HANDLE
 /// before the CLR begins writing. Caller is expected to spawn a thread
 /// that reads from this handle and forwards bytes to operator.
