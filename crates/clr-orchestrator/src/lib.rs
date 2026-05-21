@@ -66,6 +66,39 @@ fn dlog(input: &OrchestrateInput<'_>, msg: &[u8]) {
     }
 }
 
+/// Crate-global diagnostic logger. orchestrate_internal stashes the
+/// caller's log_fn here so dispatch / netfx / nlog / flush modules can
+/// emit trace lines without threading the callback through every fn
+/// signature.
+///
+/// Single-threaded: orchestrate_internal sets this at the top of the
+/// call; modules read it during the same synchronous call sequence;
+/// any background threads (e.g. the streamer) MUST NOT touch this
+/// slot — they have no orchestrator state to log.
+#[cfg(target_os = "windows")]
+static DLOG_SLOT: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(target_os = "windows")]
+fn set_dlog(f: Option<DiagLogFn>) {
+    let v = match f {
+        Some(g) => g as usize,
+        None => 0,
+    };
+    DLOG_SLOT.store(v, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Available to any module in this crate: emit `msg` if the orchestrate
+/// caller wired a logger. Cheap no-op when not wired.
+#[cfg(target_os = "windows")]
+pub(crate) fn dlog2(msg: &[u8]) {
+    let v = DLOG_SLOT.load(core::sync::atomic::Ordering::Relaxed);
+    if v != 0 {
+        let f: DiagLogFn = unsafe { core::mem::transmute(v) };
+        unsafe { f(msg.as_ptr(), msg.len()) };
+    }
+}
+
 /// Caller-supplied hook for streaming mode: receives the pipe-read HANDLE
 /// before the CLR begins writing. Caller is expected to spawn a thread
 /// that reads from this handle and forwards bytes to operator.
@@ -138,6 +171,8 @@ unsafe fn orchestrate_internal(
     ctx: *mut core::ffi::c_void,
 ) -> Result<(), OrchestratorError> {
     unsafe {
+        // Make the log fn available crate-wide for the duration of this call.
+        set_dlog(input.log_fn);
         dlog(input, b"[orch] entered");
 
         // PE parser → runtime detection (single-file mode only; multi-file
