@@ -25,7 +25,7 @@ impl Api {
     pub unsafe fn printf(&self, ty: i32, cstr: *const u8) {
         unsafe {
             if let Some(f) = self.beacon_printf {
-                f(ty, b"%s\0".as_ptr(), cstr);
+                f(ty, c"%s".as_ptr() as *const u8, cstr);
             }
         }
     }

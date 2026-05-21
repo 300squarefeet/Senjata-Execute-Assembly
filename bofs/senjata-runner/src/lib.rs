@@ -11,8 +11,6 @@
 
 extern crate alloc;
 
-use core::panic::PanicInfo;
-
 #[global_allocator]
 static __ALLOC: rustbof::allocator::BeaconAlloc = rustbof::allocator::BeaconAlloc;
 
@@ -21,8 +19,9 @@ mod beacon_api;
 mod cleanup;
 mod streamer;
 
+#[cfg(not(test))]
 #[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
+fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
