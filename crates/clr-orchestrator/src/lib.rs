@@ -12,3 +12,6 @@ extern crate alloc;
 
 // Module wiring populated by subsequent tasks.
 pub mod pe_parser;
+
+#[cfg(target_os = "windows")]
+pub mod io;

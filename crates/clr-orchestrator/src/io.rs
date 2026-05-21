@@ -1,4 +1,5 @@
-use crate::error::BofError;
+// TEMP: error type wired in Task 1.10
+type BofError = (); // placeholder so this compiles standalone
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::ffi::c_void;
@@ -58,10 +59,8 @@ impl IoChannel {
                 let path = format_path(b"\\\\.\\mailslot\\", slot.as_bytes());
                 let h = CreateMailslotA(path.as_ptr(), 0, 0xFFFFFFFF, core::ptr::null());
                 if h == INVALID_HANDLE_VALUE {
-                    return Err(BofError::Io {
-                        last_error: get_last_error(),
-                        op: "i1",
-                    });
+                    let _ = get_last_error();
+                    return Err(());
                 }
                 let w = CreateFileA(
                     path.as_ptr(),
@@ -86,10 +85,8 @@ impl IoChannel {
                     core::ptr::null(),
                 );
                 if h == INVALID_HANDLE_VALUE {
-                    return Err(BofError::Io {
-                        last_error: get_last_error(),
-                        op: "i2",
-                    });
+                    let _ = get_last_error();
+                    return Err(());
                 }
                 let w = CreateFileA(
                     path.as_ptr(),
@@ -101,10 +98,8 @@ impl IoChannel {
                     core::ptr::null_mut(),
                 );
                 if w == INVALID_HANDLE_VALUE {
-                    return Err(BofError::Io {
-                        last_error: get_last_error(),
-                        op: "i3",
-                    });
+                    let _ = get_last_error();
+                    return Err(());
                 }
                 (h, w, Mode::Pipe)
             };

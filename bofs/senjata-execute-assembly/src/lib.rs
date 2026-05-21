@@ -13,7 +13,7 @@ pub mod clr_core;
 #[cfg(target_os = "windows")]
 pub mod error;
 #[cfg(target_os = "windows")]
-pub mod io;
+pub use clr_orchestrator::io;
 pub use clr_orchestrator::pe_parser;
 
 #[rustbof::main]
