@@ -1,9 +1,2 @@
 LIBRARY beacon.dll
 EXPORTS
-    BeaconPrintf
-    BeaconOutput
-    BeaconUseToken
-    BeaconRevertToken
-    BeaconIsAdmin
-    BeaconInputAvailable
-    BeaconInputRead
