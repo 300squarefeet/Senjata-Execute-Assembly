@@ -7,6 +7,15 @@
 use crate::error::OrchestratorError as BofError;
 use crate::pe_parser::{AsmInfo, Runtime};
 
+/// Print drained assembly output to Beacon's error stream. Lives here
+/// rather than in `lib.rs` because the parent module has a `pub mod core`
+/// submodule that shadows the stdlib `core` crate inside macro expansions
+/// (edition-2024 hygiene), preventing `rustbof::eprintln!` from resolving
+/// `core::fmt::Write`. dispatch.rs has no such shadowing.
+pub fn print_output(output: &str) {
+    rustbof::eprintln!("\n{}", output);
+}
+
 /// Top-level entry: orchestrate end-to-end runtime selection + invoke.
 ///
 /// # Safety
