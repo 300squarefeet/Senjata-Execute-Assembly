@@ -254,12 +254,21 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
             b"[runner]   orchestrate_streaming returned ok=",
             result.is_ok() as u32,
         );
+        debug_log::log(b"[runner] step 8: about to streamer::join");
+        let thread_handle_log: HANDLE = STREAMER_THREAD.load(Ordering::Relaxed) as HANDLE;
+        debug_log::log_hex(
+            b"[runner]   streamer thread handle=",
+            thread_handle_log as usize as u32,
+        );
 
         // 8. Drain the streamer thread before exit so the last chunk of
         //    output isn't truncated when our process dies.
         let thread_handle: HANDLE = STREAMER_THREAD.load(Ordering::Relaxed) as HANDLE;
+        debug_log::log(b"[runner] step 8: streamer::join calling");
         streamer::join(thread_handle);
+        debug_log::log(b"[runner]   streamer::join returned");
 
+        debug_log::log(b"[runner] step 9: emit [runner] done");
         match result {
             Ok(()) => beacon_api::output(beacon_api::CALLBACK_OUTPUT, b"[runner] done\n"),
             Err(e) => {
@@ -268,6 +277,7 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
                 beacon_api::output(beacon_api::CALLBACK_ERROR, b"\n");
             }
         }
+        debug_log::log(b"[runner] step 10: postex_exit");
 
         // 9. Exit per PostexArguments::ExitFunc. Use our local `started_pipe`
         //    boolean since we ignored the startNamedPipe argument flag.
