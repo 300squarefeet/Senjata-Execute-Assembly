@@ -57,8 +57,12 @@ pub struct OrchestrateInput<'a> {
     pub log_fn: Option<DiagLogFn>,
 }
 
-/// Internal: emit `msg` via the caller-supplied logger if set.
+/// Internal: emit `msg` via the caller-supplied logger if set. No-op in
+/// production builds (the diagnostic infrastructure is retained behind
+/// a Cargo feature in the runner crate so future debugging can re-enable
+/// it without re-deriving the instrumentation).
 #[cfg(target_os = "windows")]
+#[cfg(feature = "diag-log")]
 #[inline]
 fn dlog(input: &OrchestrateInput<'_>, msg: &[u8]) {
     if let Some(f) = input.log_fn {
@@ -66,20 +70,24 @@ fn dlog(input: &OrchestrateInput<'_>, msg: &[u8]) {
     }
 }
 
+#[cfg(target_os = "windows")]
+#[cfg(not(feature = "diag-log"))]
+#[inline(always)]
+fn dlog(_input: &OrchestrateInput<'_>, _msg: &[u8]) {}
+
 /// Crate-global diagnostic logger. orchestrate_internal stashes the
 /// caller's log_fn here so dispatch / netfx / nlog / flush modules can
 /// emit trace lines without threading the callback through every fn
 /// signature.
 ///
-/// Single-threaded: orchestrate_internal sets this at the top of the
-/// call; modules read it during the same synchronous call sequence;
-/// any background threads (e.g. the streamer) MUST NOT touch this
-/// slot — they have no orchestrator state to log.
+/// Compiled out when the `diag-log` feature is off.
 #[cfg(target_os = "windows")]
+#[cfg(feature = "diag-log")]
 static DLOG_SLOT: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(target_os = "windows")]
+#[cfg(feature = "diag-log")]
 fn set_dlog(f: Option<DiagLogFn>) {
     let v = match f {
         Some(g) => g as usize,
@@ -88,9 +96,16 @@ fn set_dlog(f: Option<DiagLogFn>) {
     DLOG_SLOT.store(v, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// Available to any module in this crate: emit `msg` if the orchestrate
-/// caller wired a logger. Cheap no-op when not wired.
 #[cfg(target_os = "windows")]
+#[cfg(not(feature = "diag-log"))]
+#[inline(always)]
+fn set_dlog(_f: Option<DiagLogFn>) {}
+
+/// Available to any module in this crate: emit `msg` if the orchestrate
+/// caller wired a logger. Cheap no-op when not wired (and entirely
+/// optimised out under `not(feature = "diag-log")`).
+#[cfg(target_os = "windows")]
+#[cfg(feature = "diag-log")]
 pub(crate) fn dlog2(msg: &[u8]) {
     let v = DLOG_SLOT.load(core::sync::atomic::Ordering::Relaxed);
     if v != 0 {
@@ -99,9 +114,14 @@ pub(crate) fn dlog2(msg: &[u8]) {
     }
 }
 
-/// Emit `label` followed by a hex-formatted u32 (e.g. "label 0xdeadbeef\n").
-/// No allocation; writes via two calls to the underlying log_fn.
 #[cfg(target_os = "windows")]
+#[cfg(not(feature = "diag-log"))]
+#[inline(always)]
+pub(crate) fn dlog2(_msg: &[u8]) {}
+
+/// Emit `label` followed by a hex-formatted u32 (e.g. "label 0xdeadbeef\n").
+#[cfg(target_os = "windows")]
+#[cfg(feature = "diag-log")]
 pub(crate) fn dlog2_hex(label: &[u8], value: u32) {
     let v = DLOG_SLOT.load(core::sync::atomic::Ordering::Relaxed);
     if v == 0 {
@@ -128,6 +148,11 @@ pub(crate) fn dlog2_hex(label: &[u8], value: u32) {
     }
     unsafe { f(buf.as_ptr(), i) };
 }
+
+#[cfg(target_os = "windows")]
+#[cfg(not(feature = "diag-log"))]
+#[inline(always)]
+pub(crate) fn dlog2_hex(_label: &[u8], _value: u32) {}
 
 /// Caller-supplied hook for streaming mode: receives the pipe-read HANDLE
 /// before the CLR begins writing. Caller is expected to spawn a thread

@@ -9,6 +9,10 @@ crate-type = ["rlib"]
 [features]
 default = []
 debug-io = []
+# Step-by-step file logging of the orchestrate path. OFF by default;
+# senjata-runner enables it for triage builds via its own `diag-log`
+# feature, which propagates here via the dep declaration.
+diag-log = []
 
 [dependencies]
 rustbof = { path = "../rustbof" }
