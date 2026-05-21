@@ -26,6 +26,15 @@ fn main(args: *mut u8, len: usize) {
 fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
     use error::BofError;
     let a = args::parse(raw_args, len).map_err(BofError::Args)?;
+
+    // Operator-visible banner. Same content as senjata-runner's banner
+    // so credit + MITRE mapping is identical regardless of --inline vs
+    // sacrificial dispatch.
+    rustbof::eprintln!("[senjata] senjata-execute-assembly v0.4.0  -  Created by DAP");
+    rustbof::eprintln!(
+        "[senjata] MITRE ATT&CK: T1620 (Reflective Code Loading) | T1055.004 (APC Injection) | T1562.001 (Disable AMSI/ETW) | T1106 (Indirect Syscalls)"
+    );
+
     unsafe {
         let engine = opsec_hwbp::HwbpEngine::init()
             .map_err(|e| BofError::Orchestrator(
