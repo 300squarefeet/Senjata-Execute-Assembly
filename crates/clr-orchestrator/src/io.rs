@@ -1,7 +1,6 @@
 use crate::error::OrchestratorError as BofError;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::c_void;
 use opsec_peb::{resolve_export, resolve_module};
 use opsec_strcrypt::hash;
 
@@ -239,5 +238,3 @@ unsafe fn get_last_error() -> u32 {
     }
 }
 
-#[allow(dead_code)]
-fn _force_link_c_void(_: *mut c_void) {}
