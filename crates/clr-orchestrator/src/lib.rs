@@ -28,3 +28,5 @@ pub mod core;
 pub mod netfx;
 #[cfg(target_os = "windows")]
 pub mod dispatch;
+#[cfg(target_os = "windows")]
+pub mod bypasses;
