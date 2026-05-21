@@ -39,6 +39,16 @@ stage {
 
 # Notes
 # -----
+# 0. PPID spoofing — Malleable C2 has NO `set ppid` directive. To auto-spoof
+#    PPID to explorer.exe on every beacon check-in, load the companion
+#    Aggressor script alongside this profile:
+#      docs/profiles/senjata-auto-ppid.cna
+#    via CS Client → Script Manager → Load. The script hooks `beacon_initial`,
+#    runs ps, finds explorer.exe in the beacon's session, and calls
+#    bppid(<pid>). All subsequent spawns / injections from that beacon
+#    inherit explorer.exe as parent — process tree looks like a normal user
+#    session instead of "beacon spawns dllhost".
+#
 # 1. This file is a SNIPPET, not a complete profile. You must combine it with
 #    your existing http-*/dns-*/global {} blocks. If your profile already has
 #    process-inject {} or post-ex {} blocks, MERGE field-by-field; do not

