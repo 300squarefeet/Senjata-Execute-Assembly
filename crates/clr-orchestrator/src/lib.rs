@@ -21,7 +21,7 @@ pub mod dispatch;
 #[cfg(target_os = "windows")]
 pub mod netfx;
 #[cfg(target_os = "windows")]
-pub mod core;
+pub mod coreclr;
 #[cfg(target_os = "windows")]
 pub mod flush;
 #[cfg(target_os = "windows")]
@@ -105,7 +105,7 @@ pub unsafe fn orchestrate(
             io_ch.diag_write(b"\n[RUST_END]\n");
             if let Ok(output) = io_ch.drain() {
                 if !output.is_empty() {
-                    dispatch::print_output(&output);
+                    rustbof::eprintln!("\n{}", output);
                 }
             }
             dispatch_result?;
@@ -114,7 +114,7 @@ pub unsafe fn orchestrate(
         // for path A.
         if let Ok(output) = io_ch.drain() {
             if !output.is_empty() {
-                dispatch::print_output(&output);
+                rustbof::eprintln!("\n{}", output);
             }
         }
         let _ = invoked;
