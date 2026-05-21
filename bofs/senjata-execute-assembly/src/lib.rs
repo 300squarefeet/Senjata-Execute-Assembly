@@ -9,7 +9,7 @@ pub mod clr;
 #[cfg(target_os = "windows")]
 pub mod clr_netfx;
 #[cfg(target_os = "windows")]
-pub mod clr_core;
+pub use clr_orchestrator::core as clr_core;
 #[cfg(target_os = "windows")]
 pub mod error;
 #[cfg(target_os = "windows")]

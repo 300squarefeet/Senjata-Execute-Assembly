@@ -17,3 +17,5 @@ pub mod pe_parser;
 pub mod io;
 #[cfg(target_os = "windows")]
 pub mod cleanup;
+#[cfg(target_os = "windows")]
+pub mod core;
