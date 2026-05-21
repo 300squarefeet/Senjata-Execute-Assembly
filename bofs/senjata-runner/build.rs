@@ -86,4 +86,22 @@ fn main() {
     // resulting IAT entries point at beacon.dll which CS smartinject
     // rewrites at reflective load time.
     println!("cargo:rustc-link-lib=dylib=beacon");
+
+    // Override the PE AddressOfEntryPoint to our `DllEntryPoint` instead of
+    // mingw's auto-injected `_DllMainCRTStartup`. CS's reflective loader
+    // calls the address at `IMAGE_OPTIONAL_HEADER.AddressOfEntryPoint`;
+    // mingw's stub then looks for a `DllMain` symbol by name (NOT
+    // `DllEntryPoint`) and dispatches via the standard 3-arg `BOOL WINAPI
+    // DllMain(HINSTANCE, DWORD, LPVOID)` signature — silently dropping the
+    // 4th `startNamedPipe` arg CS UDPK provides.
+    //
+    // Without this override, `DllEntryPoint(DLL_POSTEX_ATTACH)` is never
+    // reached, `StartNamedPipeServer` never runs, and operator-side
+    // `bread_pipe` fails with `ERROR_FILE_NOT_FOUND`.
+    //
+    // Side effect: skipping the CRT startup stub leaves us without
+    // `_CRT_INIT` / `_initterm` / global ctors. We're `no_std` so none of
+    // that matters; the apiset CRT imports in the IAT become dead weight
+    // that the loader still resolves (correctly) via the apiset schema.
+    println!("cargo:rustc-link-arg=-Wl,-e,DllEntryPoint");
 }
