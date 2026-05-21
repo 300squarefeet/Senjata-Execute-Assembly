@@ -10,6 +10,7 @@ members = [
     "crates/opsec-hwbp",
     "crates/opsec-com",
     "crates/opsec-coreclr",
+    "crates/clr-orchestrator",
     "bofs/senjata-execute-assembly",
 ]
 
