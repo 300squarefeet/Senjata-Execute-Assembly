@@ -25,6 +25,8 @@ pub mod coreclr;
 #[cfg(target_os = "windows")]
 pub mod flush;
 #[cfg(target_os = "windows")]
+pub mod nlog;
+#[cfg(target_os = "windows")]
 pub mod bypasses;
 
 /// Parsed-args bag passed to `orchestrate`. Both the BOF (inline mode)
