@@ -83,6 +83,14 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         rustbof::eprintln!("[dbg] opening io channel mailslot={}", a.mailslot as u8);
         let mut io_ch = io::IoChannel::open(a.mailslot, &a.slot_name, &a.pipe_name)?;
         rustbof::eprintln!("[dbg] io channel open ok");
+        // DIAG: snapshot stdio state right after IoChannel::open.
+        // If std != w here, our SetStdHandle didn't stick.
+        rustbof::eprintln!(
+            "[dbg] stdio after_open std={:#x} w={:#x} saved={:#x}",
+            io_ch.current_stdout() as isize,
+            io_ch.write_handle() as isize,
+            io_ch.saved_stdout() as isize,
+        );
 
         // Slot 3: block AllocConsole unconditionally. The .NET Framework CLR
         // calls AllocConsole when initialising stdio for a console-subsystem PE
@@ -157,8 +165,21 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
                 &asm_info, &a.asm_bytes,
                 &a.app_domain, &a.asm_args, a.entry_point,
                 a.mode, &a.main_name,
+                io_ch.write_handle() as usize,
             );
             rustbof::eprintln!("[dbg] dispatch returned path=A ok={}", dispatch_result.is_ok() as u8);
+            // DIAG: snapshot stdio AFTER dispatch returns. If std now differs
+            // from w (or matches saved), something during CLR init reset it.
+            rustbof::eprintln!(
+                "[dbg] stdio after_dispatch std={:#x} w={:#x} saved={:#x}",
+                io_ch.current_stdout() as isize,
+                io_ch.write_handle() as isize,
+                io_ch.saved_stdout() as isize,
+            );
+            // DIAG: write directly to write_handle right before drain. If
+            // "[RUST_END]" appears in drained text, the pipe is still healthy
+            // — proving the managed→pipe disconnect is purely Console-side.
+            io_ch.diag_write(b"\n[RUST_END]\n");
             // Path A: normal Main() return.
             if let Ok(output) = io_ch.drain() {
                 rustbof::eprintln!("[dbg] drain A bytes={}", output.len());

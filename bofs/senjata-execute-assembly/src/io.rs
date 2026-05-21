@@ -7,7 +7,7 @@ use opsec_strcrypt::hash;
 
 use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileA, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_EXISTING, ReadFile,
+    CreateFileA, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_EXISTING, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::Console::{
     GetStdHandle, SetStdHandle, STD_OUTPUT_HANDLE,
@@ -20,6 +20,30 @@ pub struct IoChannel {
     handle: HANDLE,
     write_handle: HANDLE,
     saved_stdout: HANDLE,
+}
+
+impl IoChannel {
+    pub fn write_handle(&self) -> HANDLE { self.write_handle }
+    pub fn saved_stdout(&self) -> HANDLE { self.saved_stdout }
+    /// Live read of STD_OUTPUT_HANDLE — for diagnosing whether something
+    /// has reset our SetStdHandle call between BOF setup and CLR Console use.
+    pub unsafe fn current_stdout(&self) -> HANDLE {
+        unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }
+    }
+    /// Write `msg` directly to the pipe write end. Bypasses managed Console.Out
+    /// so we can verify the pipe handle is still functional at a given moment.
+    pub unsafe fn diag_write(&self, msg: &[u8]) {
+        unsafe {
+            let mut n: u32 = 0;
+            WriteFile(
+                self.write_handle,
+                msg.as_ptr(),
+                msg.len() as u32,
+                &mut n,
+                core::ptr::null_mut(),
+            );
+        }
+    }
 }
 
 enum Mode {
@@ -91,6 +115,20 @@ impl IoChannel {
             // writes to the redirected stdout HANDLE; no console WINDOW needed.
             let saved_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
             SetStdHandle(STD_OUTPUT_HANDLE, write_handle);
+
+            // DIAGNOSTIC: write a marker directly to the write handle. If
+            // "[RUST_MARK]" appears in drained output, the pipe itself is
+            // functional and the issue is somewhere in the managed Console
+            // path. If it does NOT appear, the pipe + drain pair is broken.
+            let marker: &[u8] = b"[RUST_MARK]\n";
+            let mut nwritten: u32 = 0;
+            WriteFile(
+                write_handle,
+                marker.as_ptr(),
+                marker.len() as u32,
+                &mut nwritten,
+                core::ptr::null_mut(),
+            );
 
             Ok(IoChannel {
                 mode,

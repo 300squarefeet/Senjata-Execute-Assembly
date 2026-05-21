@@ -16,6 +16,20 @@ sub u32le {
     return chr($n & 0xFF) . chr(($n >> 8) & 0xFF) . chr(($n >> 16) & 0xFF) . chr(($n >> 24) & 0xFF);
 }
 
+# Strip a single pair of surrounding double quotes from a token. Operators
+# often write `--assemblyargs "-s" "-y"`; CS split(' ',...) preserves the
+# quote chars, which then breaks downstream arg parsers like
+# CommandLineArgumentsParser (Snaffler, SharpUp, etc.).
+sub _strip_outer_quotes {
+    local('$s $len');
+    $s = $1;
+    $len = strlen($s);
+    if ($len >= 2 && substr($s, 0, 1) eq '"' && substr($s, $len - 1, $len) eq '"') {
+        return substr($s, 1, $len - 1);
+    }
+    return $s;
+}
+
 # Locate async-execute.x64.dll.
 # Checks (1) same directory as this CNA, then (2) Arsenal Kit canonical path.
 sub senjata_find_async_dll {
@@ -244,13 +258,18 @@ alias senjata-execute-assembly {
         return;
     }
 
-    # Reassemble --assemblyargs as one space-separated string
+    # Reassemble --assemblyargs as one space-separated string.
+    # Strip surrounding double quotes from each token so `"-s" "-y"` works
+    # the same as `-s -y` (CommandLineArgumentsParser et al. reject quoted
+    # switch names like `"-s"`).
     for ($i = 0; $i < size(@_dotNetAssemblyArgs); $i++) {
-        if (@_dotNetAssemblyArgs[$i] ne "") {
+        local('$_clean');
+        $_clean = _strip_outer_quotes(@_dotNetAssemblyArgs[$i]);
+        if ($_clean ne "") {
             if ($_assemblyWithArgs eq "") {
-                $_assemblyWithArgs = @_dotNetAssemblyArgs[$i];
+                $_assemblyWithArgs = $_clean;
             } else {
-                $_assemblyWithArgs = $_assemblyWithArgs." ".@_dotNetAssemblyArgs[$i];
+                $_assemblyWithArgs = $_assemblyWithArgs." ".$_clean;
             }
         }
     }

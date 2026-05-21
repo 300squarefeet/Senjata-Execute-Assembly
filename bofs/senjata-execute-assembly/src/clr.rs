@@ -21,6 +21,7 @@ pub unsafe fn dispatch(
     entry_point_flag: u32,
     mode: u32,
     main_name: &str,
+    pipe_handle: usize,
 ) -> Result<(), BofError> {
     unsafe {
         match info.runtime {
@@ -29,10 +30,12 @@ pub unsafe fn dispatch(
                     let files = crate::clr_netfx::parse_multi_blob(asm_bytes)?;
                     crate::clr_netfx::run_multi(
                         info, &files, main_name, app_domain, asm_args, entry_point_flag,
+                        pipe_handle,
                     )
                 } else {
                     crate::clr_netfx::run(
                         info, asm_bytes, app_domain, asm_args, entry_point_flag,
+                        pipe_handle,
                     )
                 }
             }
