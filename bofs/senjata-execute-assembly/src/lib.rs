@@ -14,7 +14,7 @@ pub mod clr_core;
 pub mod error;
 #[cfg(target_os = "windows")]
 pub mod io;
-pub mod pe_parser;
+pub use clr_orchestrator::pe_parser;
 
 #[rustbof::main]
 fn main(args: *mut u8, len: usize) {

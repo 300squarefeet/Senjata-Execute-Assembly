@@ -15,6 +15,7 @@ opsec-bootstrap = { path = "../../crates/opsec-bootstrap" }
 opsec-hwbp = { path = "../../crates/opsec-hwbp" }
 opsec-com = { path = "../../crates/opsec-com" }
 opsec-coreclr = { path = "../../crates/opsec-coreclr" }
+clr-orchestrator = { path = "../../crates/clr-orchestrator" }
 
 [dependencies.windows-sys]
 workspace = true

@@ -11,3 +11,4 @@
 extern crate alloc;
 
 // Module wiring populated by subsequent tasks.
+pub mod pe_parser;
