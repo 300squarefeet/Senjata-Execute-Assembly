@@ -19,3 +19,5 @@ pub mod io;
 pub mod cleanup;
 #[cfg(target_os = "windows")]
 pub mod core;
+#[cfg(target_os = "windows")]
+pub mod netfx;

@@ -7,6 +7,7 @@ edition.workspace = true
 crate-type = ["rlib"]
 
 [dependencies]
+rustbof = { path = "../rustbof" }
 opsec-strcrypt = { path = "../opsec-strcrypt" }
 opsec-strcrypt-rt = { path = "../opsec-strcrypt-rt" }
 opsec-peb = { path = "../opsec-peb" }

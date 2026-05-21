@@ -7,7 +7,7 @@ pub use clr_orchestrator::cleanup;
 #[cfg(target_os = "windows")]
 pub mod clr;
 #[cfg(target_os = "windows")]
-pub mod clr_netfx;
+pub use clr_orchestrator::netfx as clr_netfx;
 #[cfg(target_os = "windows")]
 pub use clr_orchestrator::core as clr_core;
 #[cfg(target_os = "windows")]
