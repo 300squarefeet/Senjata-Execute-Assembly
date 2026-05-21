@@ -14,7 +14,7 @@ dependencies = ["build"]
 
 [tasks.build]
 clear = true
-dependencies = ["cargo-build", "boflink", "validate", "cargo-build-dll", "copy-dll", "copy-aggressor"]
+dependencies = ["cargo-build", "boflink", "validate", "cargo-build-dll", "copy-dll", "validate-dll", "copy-aggressor"]
 
 [tasks.cargo-build-dll]
 command = "cargo"
@@ -171,3 +171,63 @@ args = ["clippy",
         "--", "-D", "warnings",
         "-D", "clippy::unwrap_used",
         "-D", "clippy::expect_used"]
+
+[tasks.validate-dll]
+dependencies = ["copy-dll"]
+script = '''
+set -euo pipefail
+echo "==> Scanning DLL .rdata for plaintext API/module names"
+# Note: unlike the BOF .o (which has no IAT), the DLL has a Windows
+# import table that legitimately contains kernel32.dll / ntdll.dll
+# filename strings (PE loader resolves CreateThread/ReadFile via
+# the IAT). Standard DLL filenames are not flagged here; suspicious
+# DLL names (amsi.dll, coreclr.dll, mscoree.dll) and ALL API names
+# still are. Forbidden import names are scanned separately below.
+BAD_NAMES='AmsiScanBuffer|AmsiScanString|AmsiOpenSession|NtTraceControl|NtSetContextThread|NtGetContextThread|RtlExitUserProcess|CLRCreateInstance|SafeArrayCreate|SafeArrayDestroy|SafeArrayPutElement|SafeArrayAccessData|SafeArrayUnaccessData|SysAllocStringLen|SysFreeString|VariantClear|coreclr_initialize|coreclr_create_delegate|coreclr_shutdown|SenjataLoader|TRUSTED_PLATFORM_ASSEMBLIES|NATIVE_DLL_SEARCH_DIRECTORIES|APP_PATHS|APP_NI_PATHS|DOTNET_ROOT|\.NETCoreApp|\.NETFramework|mscoree\.dll|amsi\.dll|coreclr\.dll|hostfxr\.dll|nethost\.dll|runtimeconfig\.json|Microsoft\.NETCore\.App|INetCache|Content\.MSO|LOCALAPPDATA|BeaconPrintf|BeaconOutput|BeaconDataParse'
+if strings -n 4 dist/${DLL_OUT} | grep -E "${BAD_NAMES}"; then
+    echo "OPSEC FAIL: plaintext API/module/BeaconAPI name in DLL"
+    exit 1
+fi
+echo "==> Scanning DLL .rdata for plaintext managed PE (encrypted asset leak)"
+if python3 -c "
+import sys, struct
+with open('dist/${DLL_OUT}', 'rb') as f:
+    data = f.read()
+e_lfanew = struct.unpack_from('<I', data, 0x3C)[0]
+coff_off = e_lfanew + 4
+num_sections = struct.unpack_from('<H', data, coff_off + 2)[0]
+opt_size     = struct.unpack_from('<H', data, coff_off + 16)[0]
+sec_off = coff_off + 20 + opt_size
+rdata = b''
+for i in range(num_sections):
+    s = data[sec_off + i*40 : sec_off + i*40 + 40]
+    name = s[:8].rstrip(b'\x00')
+    raw_size, raw_ptr = struct.unpack_from('<II', s, 16)
+    if name == b'.rdata':
+        rdata = data[raw_ptr : raw_ptr + raw_size]
+        break
+for i in range(len(rdata) - 260):
+    if rdata[i:i+2] == b'MZ':
+        sub = rdata[i:i+260]
+        if b'PE\x00\x00' in sub:
+            print(f'OPSEC FAIL: plaintext PE signature in DLL .rdata at offset 0x{i:x}', file=sys.stderr)
+            sys.exit(1)
+sys.exit(0)
+"; then
+    :
+else
+    exit 1
+fi
+echo "==> Forbidden API import scan"
+if x86_64-w64-mingw32-objdump -p dist/${DLL_OUT} | grep -E "(GetProcAddress|LoadLibraryA|LoadLibraryW)"; then
+    echo "OPSEC FAIL: forbidden API imported by DLL"
+    exit 1
+fi
+echo "==> DLL size budget"
+SZ=$(stat -f%z dist/${DLL_OUT} 2>/dev/null || stat -c%s dist/${DLL_OUT})
+if [ "$SZ" -gt 204800 ]; then
+    echo "BUILD FAIL: DLL exceeds 200 KB ($SZ bytes)"
+    exit 1
+fi
+echo "OK"
+'''
