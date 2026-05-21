@@ -18,24 +18,59 @@ use windows_sys::Win32::System::Threading::{CreateThread, INFINITE, WaitForSingl
 
 use crate::beacon_api::{CALLBACK_OUTPUT, output};
 
-/// Thread proc: read pipe → BeaconOutput in a loop until EOF / broken pipe.
+/// Thread proc: read pipe → BeaconOutput.
+///
+/// Bytes are accumulated into a growable buffer and flushed to BeaconOutput
+/// only when a newline arrives or when the buffer reaches a high-water mark
+/// (32 KiB). This keeps the operator-side display tidy — each visible
+/// "[+] [job N] ..." line corresponds to a complete output line on the
+/// target, instead of one prefix per pipe-chunk fragment.
+///
+/// On EOF / broken pipe (the orchestrator closed the write end and
+/// CancelIoEx fired) we flush any partial trailing data, then exit.
 unsafe extern "system" fn thread_proc(arg: *mut c_void) -> u32 {
     unsafe {
         let pipe_read: HANDLE = arg as HANDLE;
-        let mut buf = [0u8; 8192];
+        let mut read_buf = [0u8; 8192];
+        let mut acc: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(32 * 1024);
+        const HIGH_WATER: usize = 32 * 1024;
+
         loop {
             let mut n: u32 = 0;
             let ok = ReadFile(
                 pipe_read,
-                buf.as_mut_ptr(),
-                buf.len() as u32,
+                read_buf.as_mut_ptr(),
+                read_buf.len() as u32,
                 &mut n,
                 core::ptr::null_mut(),
             );
             if ok == 0 || n == 0 {
-                break; // EOF or ERROR_BROKEN_PIPE — write end closed.
+                break; // EOF, ERROR_BROKEN_PIPE, or ERROR_OPERATION_ABORTED.
             }
-            output(CALLBACK_OUTPUT, &buf[..n as usize]);
+            acc.extend_from_slice(&read_buf[..n as usize]);
+
+            // Flush every line-terminated chunk. Anything after the last
+            // newline stays buffered for the next read.
+            let mut last_nl: Option<usize> = None;
+            for (i, b) in acc.iter().enumerate() {
+                if *b == b'\n' {
+                    last_nl = Some(i);
+                }
+            }
+            if let Some(idx) = last_nl {
+                let flush_end = idx + 1;
+                output(CALLBACK_OUTPUT, &acc[..flush_end]);
+                acc.drain(..flush_end);
+            } else if acc.len() >= HIGH_WATER {
+                // No newline but the buffer is getting large — flush anyway.
+                output(CALLBACK_OUTPUT, &acc);
+                acc.clear();
+            }
+        }
+        // Final partial line (no trailing newline) — emit so we don't lose
+        // the last write.
+        if !acc.is_empty() {
+            output(CALLBACK_OUTPUT, &acc);
         }
         0
     }
