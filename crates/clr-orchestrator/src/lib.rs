@@ -11,6 +11,11 @@
 extern crate alloc;
 
 // Module wiring populated by subsequent tasks.
+#[cfg(target_os = "windows")]
+pub mod error;
+#[cfg(target_os = "windows")]
+pub use error::OrchestratorError;
+
 pub mod pe_parser;
 
 #[cfg(target_os = "windows")]

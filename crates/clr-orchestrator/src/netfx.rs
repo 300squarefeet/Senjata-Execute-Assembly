@@ -16,8 +16,7 @@
 //! - Tools with native dependencies (`.dll` loaded via P/Invoke from disk)
 //!   can't be supported via in-memory load alone.
 
-// TEMP: wired in Task 1.10
-type BofError = ();
+use crate::error::OrchestratorError as BofError;
 use crate::pe_parser::AsmInfo;
 use alloc::format;
 use alloc::string::String;
@@ -56,10 +55,10 @@ fn do_flush(domain: &ComPtr<AppDomain>, tag: &str, handle_hex: &str) {
         Ok(flush_asm) => {
             match unsafe { invoke(&flush_asm, handle_hex, 0) } {
                 Ok(()) => rustbof::eprintln!("[dbg] flush {} ok", tag),
-                Err(_e) => rustbof::eprintln!("[dbg] flush {} invoke err", tag),
+                Err(e) => rustbof::eprintln!("[dbg] flush {} invoke err: {}", tag, e.format()),
             }
         }
-        Err(_e) => rustbof::eprintln!("[dbg] flush {} load err", tag),
+        Err(e) => rustbof::eprintln!("[dbg] flush {} load err: {}", tag, e.format()),
     }
 }
 
@@ -138,7 +137,7 @@ pub unsafe fn run_multi(
             .iter()
             .find(|(n, _)| n.as_str() == main_name)
             .map(|(_, b)| b.as_slice())
-            .ok_or(())?;
+            .ok_or(BofError::Clr { hr: -1, op: "mNoMain" })?;
         let assembly = load_assembly(&domain, main_bytes)?;
         let result = invoke(&assembly, asm_args, entry_point_flag);
         do_flush(&domain, "post", &handle_hex);
@@ -151,34 +150,34 @@ pub unsafe fn run_multi(
 /// Layout: `[n: u32 LE]` then `n × ([name_len: u32] [name UTF-8] [body_len: u32] [body])`.
 pub fn parse_multi_blob(blob: &[u8]) -> Result<Vec<(String, Vec<u8>)>, BofError> {
     if blob.len() < 4 {
-        return Err(());
+        return Err(BofError::Clr { hr: -1, op: "mTrunc" });
     }
     let n = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
     let mut off = 4usize;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         if off + 4 > blob.len() {
-            return Err(());
+            return Err(BofError::Clr { hr: -1, op: "mTrunc" });
         }
         let name_len = u32::from_le_bytes([
             blob[off], blob[off + 1], blob[off + 2], blob[off + 3],
         ]) as usize;
         off += 4;
         if off + name_len > blob.len() {
-            return Err(());
+            return Err(BofError::Clr { hr: -1, op: "mTrunc" });
         }
         let name = String::from_utf8(blob[off..off + name_len].to_vec())
-            .map_err(|_| ())?;
+            .map_err(|_| BofError::Clr { hr: -1, op: "mUtf8" })?;
         off += name_len;
         if off + 4 > blob.len() {
-            return Err(());
+            return Err(BofError::Clr { hr: -1, op: "mTrunc" });
         }
         let body_len = u32::from_le_bytes([
             blob[off], blob[off + 1], blob[off + 2], blob[off + 3],
         ]) as usize;
         off += 4;
         if off + body_len > blob.len() {
-            return Err(());
+            return Err(BofError::Clr { hr: -1, op: "mTrunc" });
         }
         let body = blob[off..off + body_len].to_vec();
         off += body_len;
@@ -188,7 +187,7 @@ pub fn parse_multi_blob(blob: &[u8]) -> Result<Vec<(String, Vec<u8>)>, BofError>
 }
 
 unsafe fn start(_info: &AsmInfo) -> Result<ComPtr<ICorRuntimeHost>, BofError> {
-    unsafe { start_clr(V4_VERSION).map_err(|_hr| ()) }
+    unsafe { start_clr(V4_VERSION).map_err(|hr| BofError::Clr { hr, op: "c1" }) }
 }
 
 unsafe fn create_domain(
@@ -207,7 +206,7 @@ unsafe fn create_domain(
             &mut domain_unk,
         );
         if hr < 0 {
-            return Err(());
+            return Err(BofError::Clr { hr, op: "c2" });
         }
         let mut domain: *mut c_void = core::ptr::null_mut();
         let unk = domain_unk as *mut IUnknown;
@@ -220,10 +219,10 @@ unsafe fn create_domain(
         // stay alive for the AppDomain to remain valid through Load_3.
         if hr < 0 {
             ((*(*unk).vtbl).release)(unk as *mut c_void);
-            return Err(());
+            return Err(BofError::Clr { hr, op: "c3" });
         }
         ComPtr::<AppDomain>::from_raw(domain as *mut _)
-            .ok_or(())
+            .ok_or(BofError::Clr { hr: -1, op: "c4" })
     }
 }
 
@@ -233,18 +232,18 @@ unsafe fn load_assembly(
 ) -> Result<ComPtr<Assembly>, BofError> {
     unsafe {
         let sa = OwnedSafeArray::create(VT_UI1, asm.len() as u32)
-            .ok_or(())?;
+            .ok_or(BofError::Clr { hr: -1, op: "c5" })?;
         if !sa.copy_from(asm) {
-            return Err(());
+            return Err(BofError::Clr { hr: -1, op: "c5b" });
         }
         let d = domain.as_raw();
         let mut asm_ptr: *mut c_void = core::ptr::null_mut();
         let hr = ((*(*d).vtbl).load_3)(d as *mut c_void, sa.ptr, &mut asm_ptr);
         if hr < 0 {
-            return Err(());
+            return Err(BofError::Clr { hr, op: "c6" });
         }
         ComPtr::<Assembly>::from_raw(asm_ptr as *mut _)
-            .ok_or(())
+            .ok_or(BofError::Clr { hr: -1, op: "c7" })
     }
 }
 
@@ -258,15 +257,15 @@ unsafe fn invoke(
         let mut mi_ptr: *mut c_void = core::ptr::null_mut();
         let hr = ((*(*a).vtbl).entry_point)(a as *mut c_void, &mut mi_ptr);
         if hr < 0 || mi_ptr.is_null() {
-            return Err(());
+            return Err(BofError::Clr { hr, op: "c8" });
         }
         let mi = mi_ptr as *mut MethodInfo;
 
         let tokens: Vec<&str> = args_str.split_whitespace().collect();
         let args_sa = OwnedSafeArray::create(VT_VARIANT, 1)
-            .ok_or(())?;
+            .ok_or(BofError::Clr { hr: -1, op: "c9" })?;
         let bstr_array = OwnedSafeArray::create(VT_BSTR, tokens.len() as u32)
-            .ok_or(())?;
+            .ok_or(BofError::Clr { hr: -1, op: "cA" })?;
 
         if let Some(oleaut) =
             opsec_peb::resolve_module(opsec_strcrypt::hash!("oleaut32.dll"))
@@ -306,7 +305,7 @@ unsafe fn invoke(
         let obj: Variant = core::mem::zeroed();
         let hr = ((*(*mi).vtbl).invoke_3)(mi as *mut c_void, obj, args_sa.ptr, &mut retval);
         if hr < 0 {
-            return Err(());
+            return Err(BofError::Clr { hr, op: "cB" });
         }
         Ok(())
     }

