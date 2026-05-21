@@ -102,6 +102,7 @@ pub unsafe fn orchestrate(
             );
 
             // Path A: assembly Main returned normally.
+            #[cfg(feature = "debug-io")]
             io_ch.diag_write(b"\n[RUST_END]\n");
             if let Ok(output) = io_ch.drain() {
                 if !output.is_empty() {

@@ -116,19 +116,21 @@ impl IoChannel {
             let saved_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
             SetStdHandle(STD_OUTPUT_HANDLE, write_handle);
 
-            // DIAGNOSTIC: write a marker directly to the write handle. If
-            // "[RUST_MARK]" appears in drained output, the pipe itself is
-            // functional and the issue is somewhere in the managed Console
-            // path. If it does NOT appear, the pipe + drain pair is broken.
-            let marker: &[u8] = b"[RUST_MARK]\n";
-            let mut nwritten: u32 = 0;
-            WriteFile(
-                write_handle,
-                marker.as_ptr(),
-                marker.len() as u32,
-                &mut nwritten,
-                core::ptr::null_mut(),
-            );
+            // Bring-up diagnostic — gated to keep operator output clean.
+            // Writes a marker directly to the write handle; presence in
+            // drained output confirms the pipe itself is functional.
+            #[cfg(feature = "debug-io")]
+            {
+                let marker: &[u8] = b"[RUST_MARK]\n";
+                let mut nwritten: u32 = 0;
+                WriteFile(
+                    write_handle,
+                    marker.as_ptr(),
+                    marker.len() as u32,
+                    &mut nwritten,
+                    core::ptr::null_mut(),
+                );
+            }
 
             Ok(IoChannel {
                 mode,

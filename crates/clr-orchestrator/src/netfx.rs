@@ -39,7 +39,10 @@ unsafe fn stop_clr(host: &ComPtr<ICorRuntimeHost>) {
     unsafe {
         let h = host.as_raw();
         let hr = ((*(*h).vtbl).stop)(h as *mut c_void);
+        #[cfg(feature = "debug-io")]
         rustbof::eprintln!("[dbg] clr stop hr={:#010x}", hr as u32);
+        #[cfg(not(feature = "debug-io"))]
+        let _ = hr;
     }
 }
 

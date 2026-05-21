@@ -33,10 +33,21 @@ pub fn do_flush(
     match unsafe { crate::netfx::load_assembly(domain, &bytes) } {
         Ok(flush_asm) => {
             match unsafe { crate::netfx::invoke(&flush_asm, handle_hex, 0) } {
-                Ok(()) => rustbof::eprintln!("[dbg] flush {} ok", tag),
-                Err(e) => rustbof::eprintln!("[dbg] flush {} invoke err: {}", tag, e.format()),
+                Ok(()) => {
+                    #[cfg(feature = "debug-io")]
+                    rustbof::eprintln!("[dbg] flush {} ok", tag);
+                }
+                Err(_e) => {
+                    #[cfg(feature = "debug-io")]
+                    rustbof::eprintln!("[dbg] flush {} invoke err: {}", tag, _e.format());
+                }
             }
         }
-        Err(e) => rustbof::eprintln!("[dbg] flush {} load err: {}", tag, e.format()),
+        Err(_e) => {
+            #[cfg(feature = "debug-io")]
+            rustbof::eprintln!("[dbg] flush {} load err: {}", tag, _e.format());
+        }
     }
+    #[cfg(not(feature = "debug-io"))]
+    let _ = tag;
 }

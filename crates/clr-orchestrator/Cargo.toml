@@ -6,6 +6,10 @@ edition.workspace = true
 [lib]
 crate-type = ["rlib"]
 
+[features]
+default = []
+debug-io = []
+
 [dependencies]
 rustbof = { path = "../rustbof" }
 opsec-strcrypt = { path = "../opsec-strcrypt" }
