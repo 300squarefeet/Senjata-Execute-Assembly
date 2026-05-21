@@ -183,7 +183,11 @@ echo "==> Scanning DLL .rdata for plaintext API/module names"
 # the IAT). Standard DLL filenames are not flagged here; suspicious
 # DLL names (amsi.dll, coreclr.dll, mscoree.dll) and ALL API names
 # still are. Forbidden import names are scanned separately below.
-BAD_NAMES='AmsiScanBuffer|AmsiScanString|AmsiOpenSession|NtTraceControl|NtSetContextThread|NtGetContextThread|RtlExitUserProcess|CLRCreateInstance|SafeArrayCreate|SafeArrayDestroy|SafeArrayPutElement|SafeArrayAccessData|SafeArrayUnaccessData|SysAllocStringLen|SysFreeString|VariantClear|coreclr_initialize|coreclr_create_delegate|coreclr_shutdown|SenjataLoader|TRUSTED_PLATFORM_ASSEMBLIES|NATIVE_DLL_SEARCH_DIRECTORIES|APP_PATHS|APP_NI_PATHS|DOTNET_ROOT|\.NETCoreApp|\.NETFramework|mscoree\.dll|amsi\.dll|coreclr\.dll|hostfxr\.dll|nethost\.dll|runtimeconfig\.json|Microsoft\.NETCore\.App|INetCache|Content\.MSO|LOCALAPPDATA|BeaconPrintf|BeaconOutput|BeaconDataParse'
+BAD_NAMES='AmsiScanBuffer|AmsiScanString|AmsiOpenSession|NtTraceControl|NtSetContextThread|NtGetContextThread|RtlExitUserProcess|CLRCreateInstance|SafeArrayCreate|SafeArrayDestroy|SafeArrayPutElement|SafeArrayAccessData|SafeArrayUnaccessData|SysAllocStringLen|SysFreeString|VariantClear|coreclr_initialize|coreclr_create_delegate|coreclr_shutdown|SenjataLoader|TRUSTED_PLATFORM_ASSEMBLIES|NATIVE_DLL_SEARCH_DIRECTORIES|APP_PATHS|APP_NI_PATHS|DOTNET_ROOT|\.NETCoreApp|\.NETFramework|mscoree\.dll|amsi\.dll|coreclr\.dll|hostfxr\.dll|nethost\.dll|runtimeconfig\.json|Microsoft\.NETCore\.App|INetCache|Content\.MSO|LOCALAPPDATA'
+# Note: BeaconPrintf / BeaconOutput / BeaconDataParse are no longer in the
+# bad-names list — they are legitimate IAT imports against beacon.dll, which
+# CS smartinject rewrites to in-process proxies at reflective load time.
+# The IAT Name Table for those imports lives in .rdata by PE convention.
 if strings -n 4 dist/${DLL_OUT} | grep -E "${BAD_NAMES}"; then
     echo "OPSEC FAIL: plaintext API/module/BeaconAPI name in DLL"
     exit 1
