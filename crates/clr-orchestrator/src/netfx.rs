@@ -66,15 +66,13 @@ pub unsafe fn run(
         crate::dlog2(b"[netfx]   create_domain ok");
 
         let handle_hex = format!("{:x}", pipe_handle);
-        let _ = &handle_hex;
+        crate::dlog2(b"[netfx] flush(pre)");
+        crate::flush::do_flush(&domain, "pre", &handle_hex);
+        crate::dlog2(b"[netfx]   flush(pre) returned");
 
-        // DIAG v0.3.11: SKIP flush + nlog. Test #10 showed crash inside
-        // MethodInfo::invoke_3 during FlushHelper invocation. Bypass the
-        // helpers to determine whether the crash is FlushHelper-specific
-        // or whether the CLR vtable invoke chain itself is broken in
-        // this sacrificial.
-        crate::dlog2(b"[netfx] (SKIP flush(pre) for diag)");
-        crate::dlog2(b"[netfx] (SKIP nlog_config for diag)");
+        crate::dlog2(b"[netfx] nlog_config");
+        crate::nlog::do_nlog_config(&domain);
+        crate::dlog2(b"[netfx]   nlog_config returned");
 
         crate::dlog2(b"[netfx] load_assembly (user)");
         let assembly = load_assembly(&domain, asm_bytes)?;
@@ -84,7 +82,9 @@ pub unsafe fn run(
         let result = invoke(&assembly, asm_args, entry_point_flag);
         crate::dlog2(b"[netfx]   invoke returned");
 
-        crate::dlog2(b"[netfx] (SKIP flush(post) for diag)");
+        crate::dlog2(b"[netfx] flush(post)");
+        crate::flush::do_flush(&domain, "post", &handle_hex);
+        crate::dlog2(b"[netfx]   flush(post) returned");
 
         crate::dlog2(b"[netfx] stop_clr");
         stop_clr(&host);
