@@ -1,0 +1,31 @@
+[package]
+name = "clr-orchestrator"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+opsec-strcrypt = { path = "../opsec-strcrypt" }
+opsec-strcrypt-rt = { path = "../opsec-strcrypt-rt" }
+opsec-peb = { path = "../opsec-peb" }
+opsec-bootstrap = { path = "../opsec-bootstrap" }
+opsec-hwbp = { path = "../opsec-hwbp" }
+opsec-com = { path = "../opsec-com" }
+opsec-coreclr = { path = "../opsec-coreclr" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Mailslots",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true
