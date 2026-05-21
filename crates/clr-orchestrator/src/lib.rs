@@ -96,7 +96,7 @@ pub unsafe fn orchestrate(
         let mut io_ch = io::IoChannel::open(input.mailslot, input.slot_name, input.pipe_name)?;
 
         // Capture the cleanup point for the exit-trap (re-entry after
-        // Environment.Exit). dispatch::dispatch installs the trap itself.
+        // Environment.Exit). The trap is installed below before dispatch.
         let (resume_rip, resume_rsp) = cleanup::save_cleanup_point();
         // Two paths land here:
         //   A. First entry: dispatch the assembly, then drain.
