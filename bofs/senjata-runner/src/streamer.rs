@@ -13,7 +13,6 @@ use crate::beacon_api::{Api, CALLBACK_OUTPUT};
 /// Boxed context shared between the thread and its parent.
 pub struct StreamerCtx {
     pub pipe_read: HANDLE,
-    pub api_printf: Option<unsafe extern "C" fn(i32, *const u8, ...)>,
     pub api_output: Option<unsafe extern "C" fn(i32, *const u8, i32)>,
 }
 
@@ -51,7 +50,6 @@ pub unsafe fn spawn(pipe_read: HANDLE, api: &Api) -> HANDLE {
     unsafe {
         let ctx = alloc::boxed::Box::new(StreamerCtx {
             pipe_read,
-            api_printf: api.beacon_printf,
             api_output: api.beacon_output,
         });
         let ctx_ptr = alloc::boxed::Box::into_raw(ctx) as *mut c_void;

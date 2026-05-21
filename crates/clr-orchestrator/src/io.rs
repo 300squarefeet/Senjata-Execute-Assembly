@@ -24,6 +24,10 @@ pub struct IoChannel {
 impl IoChannel {
     pub fn write_handle(&self) -> HANDLE { self.write_handle }
     pub fn saved_stdout(&self) -> HANDLE { self.saved_stdout }
+    /// Returns the read end of the internal pipe. Used by senjata-runner's
+    /// streamer thread to forward bytes to operator as they arrive,
+    /// instead of waiting for end-of-run drain.
+    pub fn read_handle(&self) -> HANDLE { self.handle }
     /// Live read of STD_OUTPUT_HANDLE — for diagnosing whether something
     /// has reset our SetStdHandle call between BOF setup and CLR Console use.
     pub unsafe fn current_stdout(&self) -> HANDLE {
