@@ -5,6 +5,7 @@ default_to_workspace = false
 TARGET = "x86_64-pc-windows-gnu"
 BOF_LIB = "libsenjata_execute_assembly.a"
 BOF_OUT = "senjata-execute-assembly.x64.o"
+DLL_OUT = "senjata-runner.x64.dll"
 # Prefer rustup-managed nightly toolchain over any system stable cargo
 PATH = { value = "${HOME}/.cargo/bin:${PATH}", condition = { env_not_set = ["CARGO_MAKE_NO_PATH_OVERRIDE"] } }
 
@@ -12,7 +13,24 @@ PATH = { value = "${HOME}/.cargo/bin:${PATH}", condition = { env_not_set = ["CAR
 dependencies = ["build"]
 
 [tasks.build]
-dependencies = ["cargo-build", "boflink", "validate", "copy-aggressor"]
+clear = true
+dependencies = ["cargo-build", "boflink", "validate", "cargo-build-dll", "copy-dll", "copy-aggressor"]
+
+[tasks.cargo-build-dll]
+command = "cargo"
+args = ["build", "--release", "--target", "${TARGET}",
+        "-Z", "build-std=core,alloc",
+        "-Z", "build-std-features=compiler-builtins-mem",
+        "-p", "senjata-runner"]
+
+[tasks.copy-dll]
+dependencies = ["cargo-build-dll"]
+script = '''
+set -euo pipefail
+mkdir -p dist
+cp target/${TARGET}/release/senjata_runner.dll dist/${DLL_OUT}
+echo "==> Copied to dist/${DLL_OUT}"
+'''
 
 [tasks.cargo-build]
 command = "cargo"
@@ -146,6 +164,7 @@ args = ["clippy",
         "-p", "opsec-com",
         "-p", "opsec-coreclr",
         "-p", "clr-orchestrator",
+        "-p", "senjata-runner",
         "-p", "senjata-execute-assembly",
         "--all-targets",
         "--no-deps",
