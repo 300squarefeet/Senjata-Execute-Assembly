@@ -21,3 +21,5 @@ pub mod cleanup;
 pub mod core;
 #[cfg(target_os = "windows")]
 pub mod netfx;
+#[cfg(target_os = "windows")]
+pub mod dispatch;
