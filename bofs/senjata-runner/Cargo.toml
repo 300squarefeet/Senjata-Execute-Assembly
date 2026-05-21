@@ -6,6 +6,13 @@ edition.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = []
+# Enable file-based diagnostic logging to C:\Windows\Temp\senjata-runner.log.
+# OFF in production builds — writes are forensically visible. Useful for
+# triaging CLR-host or sacrificial-process bugs in a lab.
+diag-log = ["clr-orchestrator/diag-log"]
+
 [dependencies]
 rustbof = { path = "../../crates/rustbof" }
 clr-orchestrator = { path = "../../crates/clr-orchestrator" }
