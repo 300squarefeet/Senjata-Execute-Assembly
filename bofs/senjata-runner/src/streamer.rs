@@ -59,25 +59,24 @@ unsafe extern "system" fn thread_proc(arg: *mut c_void) -> u32 {
             }
             if let Some(idx) = last_nl {
                 let flush_end = idx + 1;
-                // Collapse runs of whitespace-only newlines into a single
-                // newline so NLog's blank separator lines don't each
-                // become their own "[+] [job N]" prefix on the operator
-                // side. Keeps the visible output dense and readable.
+                // Drop blank / whitespace-only lines entirely. NLog emits
+                // a separator newline after every log entry, which on the
+                // operator side surfaces as a useless "[+] [job N]" prefix
+                // with no content. Aggressive squashing trades data
+                // fidelity (a tool that legitimately wants blank lines as
+                // separators loses them) for readability — almost always
+                // the right call for CLI tool output.
                 let flushable = &acc[..flush_end];
                 let mut squashed: alloc::vec::Vec<u8> =
                     alloc::vec::Vec::with_capacity(flushable.len());
-                let mut last_was_blank_nl = false;
                 let mut line_start = 0usize;
                 for (i, &b) in flushable.iter().enumerate() {
                     if b == b'\n' {
                         let line = &flushable[line_start..i];
                         let is_blank = line.iter().all(|c| c.is_ascii_whitespace());
-                        if is_blank && last_was_blank_nl {
-                            // Drop this blank.
-                        } else {
+                        if !is_blank {
                             squashed.extend_from_slice(line);
                             squashed.push(b'\n');
-                            last_was_blank_nl = is_blank;
                         }
                         line_start = i + 1;
                     }
