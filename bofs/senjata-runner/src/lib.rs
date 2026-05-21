@@ -195,6 +195,17 @@ unsafe fn run_postex(h_module: HMODULE, lp_reserved: *mut c_void, start_named_pi
         };
         debug_log::log(b"[runner]   HwbpEngine::init ok");
 
+        // Operator-visible banner. Emitted once per run before any
+        // assembly output so the credit + MITRE mapping precedes the
+        // tool's own banner / output.
+        beacon_api::output(
+            beacon_api::CALLBACK_OUTPUT,
+            b"\
+[senjata] senjata-execute-assembly v0.4.0  -  Created by DAP\n\
+[senjata] MITRE ATT&CK: T1620 (Reflective Code Loading) | T1055.004 (APC Injection) | T1562.001 (Disable AMSI/ETW) | T1106 (Indirect Syscalls)\n\
+",
+        );
+
         // 6. Build the orchestrator input — with our debug_log wired as
         //    the diag callback so we see exactly which orchestrator step
         //    crashes.
