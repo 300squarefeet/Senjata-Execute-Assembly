@@ -2,11 +2,6 @@ LIBRARY beacon.dll
 EXPORTS
     BeaconPrintf
     BeaconOutput
-    BeaconDataParse
-    BeaconDataInt
-    BeaconDataShort
-    BeaconDataLength
-    BeaconDataExtract
     BeaconUseToken
     BeaconRevertToken
     BeaconIsAdmin
