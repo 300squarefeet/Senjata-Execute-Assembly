@@ -347,7 +347,7 @@ unsafe extern "system" fn mm_acquired_vas(
         if sp.is_null() {
             return S_OK;
         }
-        if (*sp).pending == 0 {
+        if core::ptr::read_volatile(&(*sp).pending) == 0 {
             return S_OK;
         }
 
@@ -843,8 +843,8 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 (*sp).payload_bytes = new_buf;
                 (*sp).payload_size = asm_bytes.len();
                 (*sp).image_size = payload_image_size;
-                (*sp).pending = 0;
-                (*sp).stomped = 0;
+                core::ptr::write_volatile(&mut (*sp).pending, 0);
+                core::ptr::write_volatile(&mut (*sp).stomped, 0);
                 (
                     bs.p_cor_host,
                     bs.memory_manager,
