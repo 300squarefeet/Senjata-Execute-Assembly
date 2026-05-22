@@ -6,8 +6,10 @@ use core::ffi::c_void;
 #[repr(C)]
 pub struct AppDomainVtbl {
     pub base: IUnknownVtbl,
-    // IDispatch (4) + ToString..Load_2 (38) = 42 slots before Load_3 (index 45)
-    pub _pad1: [usize; 42],
+    // IDispatch(4) + ToString..Load_1(38 AppDomain methods) = 41 slots
+    pub _pad1: [usize; 41],
+    /// Load_2(assemblyString: BSTR, [out] retval: *mut *mut Assembly) -> HRESULT — index 44
+    pub load_2: unsafe extern "system" fn(*mut c_void, *mut u16, *mut *mut c_void) -> i32,
     pub load_3: unsafe extern "system" fn(*mut c_void, *mut SafeArray, *mut *mut c_void) -> i32, // index 45
     // Load_4..ExecuteAssembly_2 — 6 slots between Load_3 and ExecuteAssembly_3 (index 52)
     pub _pad2: [usize; 6],
