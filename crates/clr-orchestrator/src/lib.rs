@@ -21,6 +21,8 @@ pub mod dispatch;
 #[cfg(target_os = "windows")]
 pub mod netfx;
 #[cfg(target_os = "windows")]
+pub mod clr_netfx_stomp;
+#[cfg(target_os = "windows")]
 pub mod coreclr;
 #[cfg(target_os = "windows")]
 pub mod flush;
