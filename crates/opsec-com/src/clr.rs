@@ -26,6 +26,10 @@ pub struct ICLRRuntimeInfoVtbl {
     pub get_procedure_address: unsafe extern "system" fn() -> i32,
     pub get_interface: unsafe extern "system" fn(*mut c_void, *const Guid, *const Guid, *mut *mut c_void) -> i32,
     pub is_loadable: unsafe extern "system" fn(*mut c_void, *mut i32) -> i32,
+    // SetDefaultStartupFlags(11), GetDefaultStartupFlags(12), BindAsLegacyV2Runtime(13)
+    pub _pad3: [usize; 3],
+    // IsStarted(pStarted: *mut BOOL, pdwStartupFlags: *mut DWORD) -> HRESULT — index 14
+    pub is_started: unsafe extern "system" fn(*mut c_void, *mut i32, *mut u32) -> i32,
 }
 
 #[repr(C)]
@@ -49,6 +53,24 @@ pub struct ICorRuntimeHostVtbl {
 #[repr(C)]
 pub struct ICorRuntimeHost {
     pub vtbl: *const ICorRuntimeHostVtbl,
+}
+
+/// ICLRRuntimeHost — used PRE-Start() to call SetHostControl.
+/// Distinct from ICorRuntimeHost (which is the post-Start host interface).
+#[repr(C)]
+pub struct ICLRRuntimeHostVtbl {
+    pub base: IUnknownVtbl,
+    pub start: unsafe extern "system" fn(*mut c_void) -> i32,          // index 3
+    pub stop: unsafe extern "system" fn(*mut c_void) -> i32,           // index 4
+    pub set_host_control: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32, // index 5
+    // GetCLRControl(6) + UnloadAppDomain(7) + ExecuteInAppDomain(8) +
+    // GetCurrentAppDomainId(9) + ExecuteApplication(10) + ExecuteInDefaultAppDomain(11)
+    pub _pad1: [usize; 6],
+}
+
+#[repr(C)]
+pub struct ICLRRuntimeHost {
+    pub vtbl: *const ICLRRuntimeHostVtbl,
 }
 
 pub unsafe fn start_clr(version: &[u16]) -> Result<ComPtr<ICorRuntimeHost>, i32> {

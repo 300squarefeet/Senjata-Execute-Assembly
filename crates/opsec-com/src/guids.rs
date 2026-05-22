@@ -24,3 +24,23 @@ pub const IID_APP_DOMAIN: Guid = Guid {
     data1: 0x05F696DC, data2: 0x2B29, data3: 0x3663,
     data4: [0xAD, 0x8B, 0xC4, 0x38, 0x9C, 0xF2, 0xA7, 0x13],
 };
+// CLRRuntimeHost — obtained via ICLRRuntimeInfo::GetInterface before Start().
+// Used to call SetHostControl().
+pub const CLSID_CLR_RUNTIME_HOST: Guid = Guid {
+    data1: 0x90F1A06E, data2: 0x7712, data3: 0x4762,
+    data4: [0x86, 0xB5, 0x7A, 0x5E, 0xBA, 0x6B, 0xDB, 0x02],
+};
+pub const IID_ICLR_RUNTIME_HOST: Guid = Guid {
+    data1: 0x90F1A06C, data2: 0x7712, data3: 0x4762,
+    data4: [0x86, 0xB5, 0x7A, 0x5E, 0xBA, 0x6B, 0xDB, 0x02],
+};
+// IHostControl — custom COM object registered with SetHostControl.
+pub const IID_IHOST_CONTROL: Guid = Guid {
+    data1: 0x02CA073C, data2: 0x7079, data3: 0x4860,
+    data4: [0x88, 0x0A, 0xC2, 0xF7, 0xA4, 0x49, 0xC9, 0x91],
+};
+// IHostMemoryManager — custom COM object returned by IHostControl::GetHostManager.
+pub const IID_IHOST_MEMORY_MANAGER: Guid = Guid {
+    data1: 0x7BC698D1, data2: 0xF9E3, data3: 0x4460,
+    data4: [0x9C, 0xDE, 0xD0, 0x42, 0x48, 0xE9, 0xFA, 0x25],
+};
