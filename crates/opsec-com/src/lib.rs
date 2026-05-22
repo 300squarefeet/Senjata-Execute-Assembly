@@ -16,3 +16,7 @@ pub mod variant;
 pub mod appdomain;
 #[cfg(target_os = "windows")]
 pub mod clr;
+#[cfg(target_os = "windows")]
+pub mod host_control;
+#[cfg(target_os = "windows")]
+pub mod host_memory_manager;
