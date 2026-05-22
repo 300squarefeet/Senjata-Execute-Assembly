@@ -6,10 +6,23 @@ edition.workspace = true
 [lib]
 crate-type = ["staticlib"]
 
+[features]
+default = []
+# Enable file-based diagnostic logging to C:\Windows\Temp\senjata-inline.log.
+# OFF in production builds. Mirror of senjata-runner's diag-log feature so
+# both inline and sacrificial paths share triage infrastructure.
+diag-log = ["clr-orchestrator/diag-log"]
+
 [dependencies]
 rustbof = { path = "../../crates/rustbof" }
 clr-orchestrator = { path = "../../crates/clr-orchestrator" }
 opsec-hwbp = { path = "../../crates/opsec-hwbp" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
 
 [lints]
 workspace = true
