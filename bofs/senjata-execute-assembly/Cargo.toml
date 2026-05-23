@@ -16,7 +16,6 @@ diag-log = ["clr-orchestrator/diag-log"]
 [dependencies]
 rustbof = { path = "../../crates/rustbof" }
 clr-orchestrator = { path = "../../crates/clr-orchestrator" }
-opsec-hwbp = { path = "../../crates/opsec-hwbp" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
