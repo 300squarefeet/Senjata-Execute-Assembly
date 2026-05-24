@@ -38,7 +38,9 @@ impl OrchestratorError {
                 format!("assembly threw {type_name}: {message}")
             }
             Self::ClrAlreadyRunning => {
-                "CLR already running; stomp unavailable — retrying via Load_3 + HWBP".into()
+                "CLR already running in this Beacon process — stomp requires a fresh CLR.\n\
+                 Use a new Beacon (inline stomp will work), or drop --inline for sacrificial mode."
+                    .into()
             }
         }
     }
