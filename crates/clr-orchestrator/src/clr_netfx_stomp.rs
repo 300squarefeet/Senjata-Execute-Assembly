@@ -1019,7 +1019,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     let unk = runtime_info as *mut IUnknown;
                     ((*(*unk).vtbl).release)(unk as *mut c_void);
                     restore_complus_env!();
-                    return Err(BofError::Clr { hr: -1, op: "frA" });
+                    return Err(BofError::ClrAlreadyRunning);
                 }
 
                 let mut custom_host_raw: *mut c_void = core::ptr::null_mut();

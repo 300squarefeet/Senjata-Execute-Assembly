@@ -12,6 +12,9 @@ pub enum OrchestratorError {
     MixedModeUnsupported,
     ArchMismatch,
     AssemblyThrew { type_name: String, message: String },
+    /// CLR is already running in this process and no BofState exists.
+    /// Stomp cannot be initialised; caller should fall back to Load_3.
+    ClrAlreadyRunning,
 }
 
 impl OrchestratorError {
@@ -33,6 +36,9 @@ impl OrchestratorError {
             }
             Self::AssemblyThrew { type_name, message } => {
                 format!("assembly threw {type_name}: {message}")
+            }
+            Self::ClrAlreadyRunning => {
+                "CLR already running; stomp unavailable — retrying via Load_3 + HWBP".into()
             }
         }
     }

