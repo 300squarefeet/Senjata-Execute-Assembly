@@ -43,6 +43,7 @@ fn main(args: *mut u8, len: usize) {
 #[cfg(target_os = "windows")]
 fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
     use clr_orchestrator::OrchestratorError;
+    #[allow(unused_imports)]
     use error::BofError;
 
     #[cfg(feature = "diag-log")]
@@ -94,38 +95,14 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
                 debug_log::log(b"[bof]   orchestrate_stomp returned Ok");
             }
             Err(OrchestratorError::ClrAlreadyRunning) => {
-                // CLR was started by an earlier inline run or another tool
-                // before this BOF could register IHostMemoryManager.  Fall
-                // back to the Load_3 path with HWBP-based AMSI/ETW bypass
-                // (same behaviour as v0.4).
+                // The exit-trap (HWBP on RtlExitUserProcess) requires a fresh
+                // CLR state to work safely. If CLR was started by a prior run
+                // or another tool, intercepting mid-exit corrupts CLR and
+                // kills Beacon. Error out clearly so the operator knows exactly
+                // what to do.
                 #[cfg(feature = "diag-log")]
-                debug_log::log(b"[bof]   stomp unavailable: falling back to Load_3 + HWBP");
-                rustbof::eprintln!(
-                    "[!] CLR already running in this process — stomp unavailable, falling back to Load_3 + HWBP"
-                );
-
-                let engine = opsec_hwbp::HwbpEngine::init()
-                    .map_err(|e| BofError::Orchestrator(OrchestratorError::Hwbp(e)))?;
-
-                let orch_input = clr_orchestrator::OrchestrateInput {
-                    app_domain:  &a.app_domain,
-                    amsi:        a.amsi,
-                    etw:         a.etw,
-                    mailslot:    a.mailslot,
-                    entry_point: a.entry_point,
-                    slot_name:   &a.slot_name,
-                    pipe_name:   &a.pipe_name,
-                    asm_args:    &a.asm_args,
-                    mode:        a.mode,
-                    main_name:   &a.main_name,
-                    asm_bytes:   &a.asm_bytes,
-                    #[cfg(feature = "diag-log")]
-                    log_fn: Some(diag_thunk),
-                    #[cfg(not(feature = "diag-log"))]
-                    log_fn: None,
-                };
-
-                clr_orchestrator::orchestrate(&orch_input, &engine)?;
+                debug_log::log(b"[bof]   CLR already running -- cannot stomp");
+                return Err(BofError::Orchestrator(OrchestratorError::ClrAlreadyRunning));
             }
             Err(e) => {
                 #[cfg(feature = "diag-log")]
