@@ -879,6 +879,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 (*sp).payload_bytes = new_buf;
                 (*sp).payload_size = asm_bytes.len();
                 (*sp).image_size = payload_image_size;
+                (*sp).victim_image_size = usize::MAX; // updated after victim selection
                 core::ptr::write_volatile(&mut (*sp).pending, 0);
                 core::ptr::write_volatile(&mut (*sp).stomped, 0);
                 (
@@ -912,6 +913,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 (*sp_raw).payload_bytes = buf;
                 (*sp_raw).payload_size = asm_bytes.len();
                 (*sp_raw).image_size = payload_image_size;
+                (*sp_raw).victim_image_size = usize::MAX; // updated after victim selection
 
                 let mm_raw = global_alloc_zeroed(core::mem::size_of::<MemoryManagerObject>())
                     as *mut MemoryManagerObject;

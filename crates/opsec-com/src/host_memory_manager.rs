@@ -10,6 +10,9 @@ pub struct StompPayload {
     pub payload_size: usize,
     /// SizeOfImage from the payload PE Optional Header — used for victim size check.
     pub image_size: usize,
+    /// SizeOfImage of the selected victim DLL read from its GAC_MSIL disk path.
+    /// usize::MAX = GAC read failed; upper-bound check in AcquiredVAS disabled.
+    pub victim_image_size: usize,
     /// Set to 1 before Load_2; cleared to 0 after Load_2 returns regardless of result.
     pub pending: i32,
     /// Set to 1 in AcquiredVirtualAddressSpace on successful stomp.
