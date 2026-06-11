@@ -13,6 +13,9 @@ debug-io = []
 # senjata-runner enables it for triage builds via its own `diag-log`
 # feature, which propagates here via the dep declaration.
 diag-log = []
+# Skip SetHostControl entirely — use only to diagnose whether our
+# IHostMemoryManager registration causes Start() to fail. Never ship.
+diag-skip-hc = ["diag-log"]
 
 [dependencies]
 rustbof = { path = "../rustbof" }

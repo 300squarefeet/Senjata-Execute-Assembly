@@ -12,6 +12,7 @@ default = []
 # OFF in production builds. Mirror of senjata-runner's diag-log feature so
 # both inline and sacrificial paths share triage infrastructure.
 diag-log = ["clr-orchestrator/diag-log"]
+diag-skip-hc = ["clr-orchestrator/diag-skip-hc"]
 
 [dependencies]
 rustbof = { path = "../../crates/rustbof" }

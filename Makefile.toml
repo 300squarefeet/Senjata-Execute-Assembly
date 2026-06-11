@@ -133,6 +133,80 @@ set -euo pipefail
 cp bofs/senjata-execute-assembly/aggressor/senjata-execute-assembly.cna dist/ 2>/dev/null || true
 '''
 
+[tasks.build-diag]
+clear = true
+description = "Debug build: BOF + DLL with diag-log feature enabled. Skips OPSEC validation. Output: dist/*.o and dist/*.dll."
+dependencies = ["cargo-build-diag", "boflink-diag", "copy-aggressor-diag", "cargo-build-dll", "copy-dll"]
+
+[tasks.cargo-build-diag]
+command = "cargo"
+args = ["build", "--release", "--target", "${TARGET}",
+        "-Z", "build-std=core,alloc",
+        "-Z", "build-std-features=compiler-builtins-mem",
+        "--features", "diag-log",
+        "-p", "senjata-execute-assembly"]
+
+[tasks.boflink-diag]
+dependencies = ["cargo-build-diag"]
+script = '''
+set -euo pipefail
+mkdir -p dist
+boflink --mingw64 \
+        --warn-unresolved-symbols \
+        --whole-archive \
+        target/${TARGET}/release/${BOF_LIB} \
+        --no-whole-archive \
+        -lkernel32 -loleaut32 -lole32 \
+        -o dist/${BOF_OUT}.raw
+for SEC in $(x86_64-w64-mingw32-objdump -h dist/${BOF_OUT}.raw | awk '$2 ~ /^\.text\./ {print $2}'); do
+    x86_64-w64-mingw32-objcopy --rename-section "${SEC}=.text" dist/${BOF_OUT}.raw
+done
+x86_64-w64-mingw32-ld -r -o dist/${BOF_OUT} dist/${BOF_OUT}.raw
+rm -f dist/${BOF_OUT}.raw
+echo "==> diag BOF written to dist/${BOF_OUT} (OPSEC validation skipped)"
+'''
+
+[tasks.build-diag-skip-hc]
+clear = true
+description = "Diagnostic: BOF with diag-skip-hc. SetHostControl skipped → Start() runs without IHostMemoryManager. Output: dist/senjata-execute-assembly.x64.nohc.o"
+dependencies = ["cargo-build-diag-skip-hc", "boflink-diag-skip-hc"]
+
+[tasks.cargo-build-diag-skip-hc]
+command = "cargo"
+args = ["build", "--release", "--target", "${TARGET}",
+        "-Z", "build-std=core,alloc",
+        "-Z", "build-std-features=compiler-builtins-mem",
+        "--features", "diag-skip-hc",
+        "-p", "senjata-execute-assembly"]
+
+[tasks.boflink-diag-skip-hc]
+dependencies = ["cargo-build-diag-skip-hc"]
+script = '''
+set -euo pipefail
+mkdir -p dist
+NOHC_OUT="senjata-execute-assembly.x64.nohc.o"
+boflink --mingw64 \
+        --warn-unresolved-symbols \
+        --whole-archive \
+        target/${TARGET}/release/${BOF_LIB} \
+        --no-whole-archive \
+        -lkernel32 -loleaut32 -lole32 \
+        -o dist/${NOHC_OUT}.raw
+for SEC in $(x86_64-w64-mingw32-objdump -h dist/${NOHC_OUT}.raw | awk '$2 ~ /^\.text\./ {print $2}'); do
+    x86_64-w64-mingw32-objcopy --rename-section "${SEC}=.text" dist/${NOHC_OUT}.raw
+done
+x86_64-w64-mingw32-ld -r -o dist/${NOHC_OUT} dist/${NOHC_OUT}.raw
+rm -f dist/${NOHC_OUT}.raw
+echo "==> diag-skip-hc BOF: dist/${NOHC_OUT} (no IHostMemoryManager, OPSEC validation skipped)"
+'''
+
+[tasks.copy-aggressor-diag]
+dependencies = ["boflink-diag"]
+script = '''
+set -euo pipefail
+cp bofs/senjata-execute-assembly/aggressor/senjata-execute-assembly.cna dist/ 2>/dev/null || true
+'''
+
 [tasks.test]
 # senjata-execute-assembly is Windows-only (depends on rustbof::BeaconAlloc which
 # calls HeapAlloc/HeapFree). Test only the platform-portable crates.

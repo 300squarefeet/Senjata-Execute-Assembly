@@ -10,4 +10,4 @@ pub mod engine;
 pub mod veh;
 
 #[cfg(target_os = "windows")]
-pub use engine::{Error, HwbpEngine, HwbpGuard};
+pub use engine::{Error, HwbpEngine, HwbpGuard, EXIT_TRAP_FIRED};

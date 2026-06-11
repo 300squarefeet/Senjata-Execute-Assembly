@@ -41,6 +41,22 @@ pub unsafe extern "system" fn dispatch(info: *mut EXCEPTION_POINTERS) -> i32 {
                 EXCEPTION_CONTINUE_SEARCH
             }
             CallbackKind::ExitTrap { resume_rip, resume_rsp } => {
+                // One-shot: remove the descriptor so subsequent calls to
+                // RtlExitUserProcess (e.g. from postex_exit → ExitProcess)
+                // don't re-fire and corrupt the stack.
+                TABLE.remove(d.address, d.thread_id);
+                // Clear DR for this slot in the current thread's CONTEXT so
+                // the HW breakpoint stops firing immediately on this thread.
+                match d.slot {
+                    0 => { ctx.Dr0 = 0; ctx.Dr7 &= !1u64; }
+                    1 => { ctx.Dr1 = 0; ctx.Dr7 &= !(1u64 << 2); }
+                    2 => { ctx.Dr2 = 0; ctx.Dr7 &= !(1u64 << 4); }
+                    3 => { ctx.Dr3 = 0; ctx.Dr7 &= !(1u64 << 6); }
+                    _ => {}
+                }
+                // Signal orchestrate_internal that we took the exit-trap path
+                // so it skips re-dispatching the assembly.
+                crate::engine::EXIT_TRAP_FIRED.store(1, core::sync::atomic::Ordering::Relaxed);
                 ctx.Rip = resume_rip as u64;
                 ctx.Rsp = resume_rsp as u64;
                 ctx.EFlags |= RESUME_FLAG;
