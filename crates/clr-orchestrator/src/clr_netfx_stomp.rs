@@ -838,10 +838,10 @@ unsafe fn read_victim_size_from_gac(candidate: &VictimCandidate) -> Option<usize
         let e_lfanew = u32::from_le_bytes([
             hdr_buf[0x3C], hdr_buf[0x3D], hdr_buf[0x3E], hdr_buf[0x3F],
         ]) as usize;
-        let opt = e_lfanew + 24;
-        if opt + 60 > n_read as usize {
+        if e_lfanew.saturating_add(84) > n_read as usize {
             return None;
         }
+        let opt = e_lfanew + 24;
         let size_of_image = u32::from_le_bytes([
             hdr_buf[opt + 56],
             hdr_buf[opt + 57],
