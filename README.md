@@ -1,9 +1,9 @@
 # Senjata-Execute-Assembly
 
-Patchless C# runner for Cobalt Strike — Rust port of `PatchlessInlineExecute-Assembly`,
-extended into a dual-artefact system (BOF + postex DLL) so the same OPSEC posture covers
-both inline and sacrificial execution. v0.3+ ships universal compatibility for Ghostpack,
-Snaffler, winPEAS, SharpHound, and similar .NET tooling.
+Patchless C# runner for Cobalt Strike — dual-artefact system (BOF + postex DLL) with
+a shared CLR core, so the same OPSEC posture covers both inline and sacrificial execution.
+v0.3+ ships universal compatibility for Ghostpack, Snaffler, winPEAS, SharpHound, and
+similar .NET tooling.
 
 ## Highlights
 
@@ -105,7 +105,6 @@ full compatibility matrix and known limitations.
 
 ## Credits
 
-- `PatchlessInlineExecute-Assembly` original C implementation (preserved in `legacy/`)
 - `@rad9800` for the patchless hook technique
 - `joaoviictorti/rustbof` for the Rust BOF framework
 - `MEhrn00/boflink` for the COFF linker
