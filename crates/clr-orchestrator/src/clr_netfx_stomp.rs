@@ -548,26 +548,22 @@ unsafe extern "system" fn hm_release(this: *mut c_void) -> u32 {
 }
 
 unsafe extern "system" fn hm_alloc(
-    _this: *mut c_void, cb: usize, _crit: u32, pp_mem: *mut *mut c_void,
+    this: *mut c_void, cb: usize, _crit: u32, pp_mem: *mut *mut c_void,
 ) -> i32 {
     unsafe {
         crate::dlog2(b"[mm] Alloc called");
         crate::dlog2_hex(b"[mm] Alloc: cb=", cb as u32);
-        // Use VirtualAlloc instead of HeapAlloc: HeapAlloc raises SEH exceptions
-        // on this target (EDR hook or global heap validation flags). VirtualAlloc
-        // never raises — returns NULL on failure.
-        type VirtualAllocFn = unsafe extern "system" fn(*mut c_void, usize, u32, u32) -> *mut c_void;
-        match peb_fn::<VirtualAllocFn>(hash!("kernel32.dll"), hash!("VirtualAlloc")) {
+        let obj = this as *mut HostMallocObject;
+        type HeapAllocFn = unsafe extern "system" fn(*mut c_void, u32, usize) -> *mut c_void;
+        match peb_fn::<HeapAllocFn>(hash!("kernel32.dll"), hash!("HeapAlloc")) {
             Some(f) => {
-                crate::dlog2(b"[mm] Alloc: calling VirtualAlloc");
-                // Allocate at least 1 byte; size=0 is undefined for VirtualAlloc.
+                crate::dlog2(b"[mm] Alloc: calling HeapAlloc");
                 let sz = if cb == 0 { 1 } else { cb };
-                // MEM_COMMIT | MEM_RESERVE = 0x3000, PAGE_READWRITE = 0x04
-                let p = f(core::ptr::null_mut(), sz, 0x3000, 0x04);
-                crate::dlog2(b"[mm] Alloc: VirtualAlloc returned");
+                let p = f((*obj).heap_handle, 0, sz);
+                crate::dlog2(b"[mm] Alloc: HeapAlloc returned");
                 *pp_mem = p;
                 if p.is_null() {
-                    crate::dlog2(b"[mm] Alloc FAILED (VirtualAlloc null)");
+                    crate::dlog2(b"[mm] Alloc FAILED (null)");
                     E_OUTOFMEMORY
                 } else {
                     crate::dlog2(b"[mm] Alloc ok");
@@ -575,9 +571,9 @@ unsafe extern "system" fn hm_alloc(
                 }
             }
             None => {
-                crate::dlog2(b"[mm] Alloc FAILED (no VirtualAlloc)");
+                crate::dlog2(b"[mm] Alloc FAILED (no HeapAlloc)");
                 E_OUTOFMEMORY
-            },
+            }
         }
     }
 }
@@ -589,15 +585,15 @@ unsafe extern "system" fn hm_debug_alloc(
     unsafe { hm_alloc(this, cb, crit, pp_mem) }
 }
 
-unsafe extern "system" fn hm_free(_this: *mut c_void, p_mem: *mut c_void) -> i32 {
+unsafe extern "system" fn hm_free(this: *mut c_void, p_mem: *mut c_void) -> i32 {
     unsafe {
         if p_mem.is_null() {
             return S_OK;
         }
-        // Mirror of hm_alloc: use VirtualFree(MEM_RELEASE) to match VirtualAlloc.
-        type VirtualFreeFn = unsafe extern "system" fn(*mut c_void, usize, u32) -> i32;
-        if let Some(f) = peb_fn::<VirtualFreeFn>(hash!("kernel32.dll"), hash!("VirtualFree")) {
-            f(p_mem, 0, 0x8000); // MEM_RELEASE
+        let obj = this as *mut HostMallocObject;
+        type HeapFreeFn = unsafe extern "system" fn(*mut c_void, u32, *mut c_void) -> i32;
+        if let Some(f) = peb_fn::<HeapFreeFn>(hash!("kernel32.dll"), hash!("HeapFree")) {
+            f((*obj).heap_handle, 0, p_mem);
         }
         S_OK
     }
