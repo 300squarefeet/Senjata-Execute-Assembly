@@ -412,7 +412,7 @@ unsafe extern "system" fn mm_acquired_vas(
             *payload_bytes.add(0x3E),
             *payload_bytes.add(0x3F),
         ]) as usize;
-        if e_lfanew + 24 + 4 > payload_size {
+        if e_lfanew.saturating_add(88) > payload_size {
             return S_OK;
         }
         let opt = e_lfanew + 24;
