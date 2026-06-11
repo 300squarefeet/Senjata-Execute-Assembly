@@ -1,6 +1,13 @@
 use crate::descriptor::{CallbackKind, Descriptor};
 use crate::veh;
 use opsec_bootstrap::Bootstrap;
+use core::sync::atomic::AtomicU8;
+
+/// Set to 1 by the VEH ExitTrap handler just before redirecting RIP/RSP.
+/// Read by `orchestrate_internal` after `save_cleanup_point()` returns to
+/// detect re-entry (path B) and skip re-dispatching the assembly.
+/// Reset to 0 at the start of every `orchestrate_internal` call.
+pub static EXIT_TRAP_FIRED: AtomicU8 = AtomicU8::new(0);
 use opsec_peb::{resolve_export, resolve_module};
 use opsec_strcrypt::hash;
 use core::ffi::c_void;
@@ -234,6 +241,16 @@ impl HwbpEngine {
             }
             self.bootstrap
                 .nt_set_context_thread(thread, &ctx as *const _ as *const c_void);
+        }
+    }
+
+    /// Remove all TABLE entries and DR settings for `(target, slot)` across
+    /// all process threads. Call on path B (exit-trap re-entry) to clean up
+    /// the stale descriptor left when `HwbpGuard` wasn't dropped normally.
+    pub unsafe fn remove_breakpoint(&self, target: usize, slot: u8) {
+        unsafe {
+            veh::table().remove(target, 0);
+            let _ = self.apply_breakpoint_to_all_threads(target, slot, false);
         }
     }
 }
