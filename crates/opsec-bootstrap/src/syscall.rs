@@ -93,6 +93,7 @@ pub enum BootstrapExport {
     NtQueryDirectoryFile,
     NtOpenKey,
     NtQueryValueKey,
+    NtProtectVirtualMemory,
 }
 
 impl core::fmt::Debug for BootstrapExport {
@@ -128,6 +129,8 @@ pub struct Bootstrap {
     pub open_key_ssn: u32,
     pub query_value_key: *const u8,
     pub query_value_key_ssn: u32,
+    pub protect_vm: *const u8,
+    pub protect_vm_ssn: u32,
 }
 
 impl Bootstrap {
@@ -179,12 +182,17 @@ impl Bootstrap {
             resolve_export(ntdll, hash!("NtQueryValueKey"))
                 .ok_or(Error::StubNotFound(BootstrapExport::NtQueryValueKey))? as *const u8
         };
+        let protect_vm = unsafe {
+            resolve_export(ntdll, hash!("NtProtectVirtualMemory"))
+                .ok_or(Error::StubNotFound(BootstrapExport::NtProtectVirtualMemory))? as *const u8
+        };
         let create_file_ssn      = unsafe { extract_ssn(create_file).unwrap_or(0) };
         let write_file_ssn       = unsafe { extract_ssn(write_file).unwrap_or(0) };
         let close_ssn            = unsafe { extract_ssn(close).unwrap_or(0) };
         let query_dir_file_ssn   = unsafe { extract_ssn(query_dir_file).unwrap_or(0) };
         let open_key_ssn         = unsafe { extract_ssn(open_key).unwrap_or(0) };
         let query_value_key_ssn  = unsafe { extract_ssn(query_value_key).unwrap_or(0) };
+        let protect_vm_ssn       = unsafe { extract_ssn(protect_vm).unwrap_or(0) };
 
         Ok(Bootstrap {
             ntdll, gadget,
@@ -196,6 +204,7 @@ impl Bootstrap {
             query_dir_file, query_dir_file_ssn,
             open_key, open_key_ssn,
             query_value_key, query_value_key_ssn,
+            protect_vm, protect_vm_ssn,
         })
     }
 
@@ -443,6 +452,45 @@ impl Bootstrap {
                     info_class as usize, info as usize,
                     info_length as usize, result_length as usize,
                     self.query_value_key_ssn, self.gadget,
+                )
+            }
+        }
+    }
+
+    /// NtProtectVirtualMemory — 5 args. Reuses `indirect_syscall6` with the
+    /// 6th arg zeroed (NtProtectVirtualMemory's stub does not read it).
+    ///
+    /// # Safety
+    /// All pointer args must satisfy NtProtectVirtualMemory's ABI.
+    pub unsafe fn nt_protect_virtual_memory(
+        &self,
+        process: *mut core::ffi::c_void,
+        base_address: *mut *mut core::ffi::c_void,
+        region_size: *mut usize,
+        new_protect: u32,
+        old_protect: *mut u32,
+    ) -> i32 {
+        unsafe {
+            if extract_ssn(self.protect_vm).is_some() {
+                type Fn = unsafe extern "system" fn(
+                    *mut core::ffi::c_void,
+                    *mut *mut core::ffi::c_void,
+                    *mut usize,
+                    u32,
+                    *mut u32,
+                ) -> i32;
+                let f: Fn = core::mem::transmute(self.protect_vm);
+                f(process, base_address, region_size, new_protect, old_protect)
+            } else {
+                indirect_syscall6(
+                    process as usize,
+                    base_address as usize,
+                    region_size as usize,
+                    new_protect as usize,
+                    old_protect as usize,
+                    0,
+                    self.protect_vm_ssn,
+                    self.gadget,
                 )
             }
         }
