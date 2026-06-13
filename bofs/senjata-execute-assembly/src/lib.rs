@@ -57,10 +57,7 @@ fn run(raw_args: *mut u8, len: usize) -> Result<(), error::BofError> {
         debug_log::log_hex(b"[bof]   asm_bytes.len=", a.asm_bytes.len() as u32);
     }
 
-    rustbof::eprintln!("[senjata] senjata-execute-assembly v0.5.1  -  Created by DAP");
-    rustbof::eprintln!(
-        "[senjata] MITRE ATT&CK: T1620 (Reflective Code Loading) | T1562.001 (Disable AMSI/ETW) | T1106 (Indirect Syscalls)"
-    );
+    rustbof::eprintln!("[senjata] senjata-execute-assembly v0.5.1");
 
     unsafe {
         #[cfg(feature = "diag-log")]
