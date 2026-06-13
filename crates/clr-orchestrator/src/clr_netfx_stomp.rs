@@ -34,7 +34,7 @@ const E_NOINTERFACE: i32 = 0x80004002_u32 as i32;
 const E_NOTIMPL: i32 = 0x80004001_u32 as i32;
 const E_OUTOFMEMORY: i32 = 0x8007000E_u32 as i32;
 
-const BOF_STATE_MAGIC: u32 = 0x534E_4A54; // "SNJT"
+const BOF_STATE_MAGIC: u32 = 0x534E_4A55; // "SNJU" — layout bump for nt_vp_{ssn,gadget}
 const HOST_OBJECTS_ANCHOR: u32 = 0xDEAD_BEEF;
 
 #[repr(C)]
@@ -1067,6 +1067,8 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
                 (*sp_raw).payload_size = asm_bytes.len();
                 (*sp_raw).image_size = payload_image_size;
                 (*sp_raw).victim_image_size = usize::MAX; // updated after victim selection
+                (*sp_raw).nt_vp_ssn = 0; // set later in Task 5
+                (*sp_raw).nt_vp_gadget = 0; // set later in Task 5
 
                 let mm_raw = global_alloc_zeroed(core::mem::size_of::<MemoryManagerObject>())
                     as *mut MemoryManagerObject;
