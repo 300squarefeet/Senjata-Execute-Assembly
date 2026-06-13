@@ -135,16 +135,6 @@ similar quick utilities.
 | `--slotname <name>` | Override the internal mailslot name |
 | `--pipename <name>` | Override the internal named-pipe name |
 
-### Tool compatibility
-
-| Tool family | Default (sacrificial) | `--inline` |
-|---|---|---|
-| Rubeus, Seatbelt, SharpUp, Certify, SharpDPAPI | yes | yes |
-| Snaffler | yes (NLog auto-routes) | yes |
-| winPEAS | yes | not supported — calls `Environment.Exit` and spawns aggressive threads |
-| SharpHound | yes | not recommended — long-running, may hold COM apartments |
-| Other Ghostpack | yes | yes |
-
 ### Malleable C2 profile
 
 `docs/profiles/senjata-recommended.profile` ships a snippet that pins `process-inject`
