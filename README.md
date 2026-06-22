@@ -1,88 +1,121 @@
 # Senjata-Execute-Assembly
 
-A patchless, OPSEC-hardened `execute-assembly` implementation for Cobalt Strike, written
-in Rust. Ships as two complementary artefacts that share a single CLR-hosting core, so
-the same evasion posture covers both inline and sacrificial execution paths.
+[![CI](https://github.com/300squarefeet/Senjata-Execute-Assembly/actions/workflows/ci.yml/badge.svg)](https://github.com/300squarefeet/Senjata-Execute-Assembly/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Cobalt%20Strike-blue.svg)]()
+[![Rust](https://img.shields.io/badge/rust-nightly--2025--01--25-orange.svg)]()
 
-Tested against current-generation .NET tooling: Rubeus, Seatbelt, SharpUp, Certify,
-SharpDPAPI, SharpHound, Snaffler, winPEAS, and the broader Ghostpack family across
-.NET Framework 2.x / 3.x / 4.x and .NET 6 / 7 / 8.
+A patchless, OPSEC-hardened `execute-assembly` implementation for Cobalt Strike,
+written in Rust. Ships two complementary artefacts that share a single CLR-hosting
+core, so the same evasion posture covers both inline and sacrificial execution paths.
+
+Compatible with current-generation .NET tooling across .NET Framework 2.x / 3.x / 4.x
+and .NET 6 / 7 / 8.
+
+> ⚠️ **Authorised use only.** This is offensive security research tooling. Use only
+> against systems you own or have explicit written authorisation to test.
 
 ---
 
-## Why another execute-assembly?
+## Table of contents
 
-The stock Cobalt Strike `execute-assembly` and most public ports leak signal at three
-layers:
+- [Motivation](#motivation)
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Build](#build)
+- [Usage](#usage)
+- [Evasion techniques](#evasion-techniques)
+- [Architecture](#architecture)
+- [Development](#development)
+- [Limitations](#limitations)
+- [Credits](#credits)
+- [License](#license)
+
+---
+
+## Motivation
+
+The stock `execute-assembly` and most public ports leak signal at three layers:
 
 1. **AMSI / ETW / AllocConsole** are patched with `0xC3` / `0x00` bytes at well-known
-   offsets. EDRs flag both the patch event and the resulting unbacked .text in
+   offsets. EDRs flag both the patch event and the resulting unbacked `.text` in
    user-space.
 2. **`Environment.Exit()`** inside the managed assembly walks all the way down to
    `RtlExitUserProcess`, taking Beacon with it.
 3. **Imports / runtime calls** expose plaintext strings like `AmsiScanBuffer`,
    `EtwEventWrite`, `GetProcAddress`, `LoadLibrary` in `.rdata` and the BOF's IAT.
 
-Senjata-Execute-Assembly addresses all three at the technique level:
-
-- **Hardware breakpoints (DR0–DR3) + VEH dispatch** replace memory patches. AMSI/ETW
-  return immediately; `RtlExitUserProcess` is redirected back into our cleanup point.
-- **PEB-walking + DJB2 hashing** replaces every API resolution. No sensitive name
-  ever appears in `.rdata` or the import table.
-- **Indirect syscalls** are used for the two NT APIs we need (`NtGet/SetContextThread`
-  for HWBP install and `NtProtectVirtualMemory` for the inline-mode CLR stomp). The
-  `syscall` instruction stays inside ntdll.
+This project addresses all three at the technique level — hardware breakpoints
+instead of byte patches, PEB-walking with DJB2 hashing instead of named imports, and
+indirect syscalls for the two NT APIs that must be invoked from our own thread.
 
 ---
 
-## Highlights
+## Features
 
 - **Patchless AMSI + ETW + AllocConsole + `Environment.Exit` bypass** via hardware
-  breakpoints — no memory patching at all
+  breakpoints (DR0–DR3) and a vectored exception handler — no memory patching at all
 - **Two artefacts, one CLR core** — `senjata-execute-assembly.x64.o` (BOF, inline mode)
   and `senjata-runner.x64.dll` (post-ex DLL, sacrificial mode) share the same
-  `clr-orchestrator`
+  orchestrator crate
 - **Live output streaming** during multi-minute / multi-hour sacrificial runs — reader
   thread pumps pipe data to `BeaconOutput` on each check-in
 - **NLog auto-routing** for tools like Snaffler and SharpHound that bypass
-  `Console.Out` — runtime reflection redirects their loggers without per-tool source
-  patches
-- **Dual runtime support** — .NET Framework 2.x / 3.x / 4.x via the COM hosting path
-  (ICLRMetaHost → ICorRuntimeHost → AppDomain.Load_2) and .NET 6 / 7 / 8 via direct
-  CoreCLR hosting (`coreclr_initialize` + `coreclr_create_delegate`)
-- **Explicit rejection** of mixed-mode (C++/CLI) and self-contained .NET 5+ single-file
-  deployments — no silent failure
+  `Console.Out` — runtime reflection redirects their loggers without per-tool patches
+- **Dual runtime support** — .NET Framework 2.x / 3.x / 4.x via COM hosting
+  (`ICLRMetaHost` → `ICorRuntimeHost` → `AppDomain.Load_2`) and .NET 6 / 7 / 8 via
+  direct CoreCLR hosting (`coreclr_initialize` + `coreclr_create_delegate`)
+- **Explicit rejection** of mixed-mode (C++/CLI) and self-contained .NET 5+
+  single-file deployments — no silent failure
 - **No plaintext API names** anywhere in either artefact — every module/export
   resolved via PEB walk + DJB2 hash compared against compile-time constants
 - **Indirect syscalls** for `NtGet/SetContextThread` (HWBP install) and
-  `NtProtectVirtualMemory` (CLR module stomp)
+  `NtProtectVirtualMemory` (inline-mode CLR stomp)
 - **OPSEC validation gate** runs at build time — any plaintext API name or forbidden
   import that slips through fails CI
 
 ---
 
+## Quick start
+
+Pre-built artefacts are published with each [release](../../releases). Drop them in
+your Cobalt Strike scripts directory, load the `.cna`, and dispatch:
+
+```text
+beacon> senjata-execute-assembly --dotnetassembly C:\Tools\Rubeus.exe \
+        --assemblyargs triage
+```
+
+To build from source, see [Build](#build) below.
+
+---
+
 ## Build
 
-Toolchain pinned to nightly-2025-01-25 via `rust-toolchain.toml`. Cross-compiled from
-Linux/macOS to `x86_64-pc-windows-gnu` with `-Z build-std=core,alloc` and
+Toolchain pinned to `nightly-2025-01-25` via `rust-toolchain.toml`. Cross-compiled
+from Linux / macOS to `x86_64-pc-windows-gnu` with `-Z build-std=core,alloc` and
 `-Z build-std-features=compiler-builtins-mem` (Beacon's loader does not provide
-`memcpy`/`memset`/`memcmp`).
+`memcpy` / `memset` / `memcmp`).
 
 ```bash
 cargo make build
-# outputs:
-#   dist/senjata-execute-assembly.x64.o   (BOF — inline mode)
-#   dist/senjata-runner.x64.dll           (post-ex DLL — sacrificial mode, default)
-#   dist/senjata-execute-assembly.cna     (Aggressor dispatcher)
 ```
 
-The build pipeline runs in order: cargo build (release) → `boflink` → section merge
-(`x86_64-w64-mingw32-ld -r`) → OPSEC validation (`cargo make validate`) → copy `.cna`
-to `dist/`. The OPSEC gate scans the linked artefacts for plaintext API/module names,
-forbidden imports (`GetProcAddress`, `LoadLibrary*`), plaintext managed PE signatures
-in `.rdata`, and compiler-rt undefined references. Any violation fails the build.
+Outputs:
 
-Reproducible build via Docker:
+| File | Purpose |
+|------|---------|
+| `dist/senjata-execute-assembly.x64.o` | BOF — inline mode |
+| `dist/senjata-runner.x64.dll` | Post-ex DLL — sacrificial mode (default) |
+| `dist/senjata-execute-assembly.cna` | Aggressor dispatcher |
+
+The build pipeline runs in order: `cargo build --release` → `boflink` → section merge
+(`x86_64-w64-mingw32-ld -r`) → OPSEC validation → copy `.cna`. The OPSEC gate scans
+the linked artefacts for plaintext API/module names, forbidden imports
+(`GetProcAddress`, `LoadLibrary*`), plaintext managed PE signatures in `.rdata`, and
+compiler-rt undefined references. Any violation fails the build.
+
+### Reproducible build via Docker
 
 ```bash
 docker build -t senjata-build .
@@ -91,33 +124,31 @@ docker run --rm -v $PWD/dist:/work/dist senjata-build
 
 ---
 
-## Operator usage
+## Usage
 
-### Default: sacrificial process (universal compatibility)
+### Default: sacrificial process
 
 ```text
-beacon> senjata-execute-assembly --dotnetassembly C:\corpus\Tool.exe \
-        --assemblyargs <args>
+beacon> senjata-execute-assembly --dotnetassembly C:\Tools\Seatbelt.exe \
+        --assemblyargs all
 ```
 
-The assembly runs in a freshly-spawned `dllhost.exe` (or whatever `spawnto_x64` is set
-to). Output streams back to the operator on each Beacon check-in. Beacon stays
-interactive for the duration. Assemblies that call `Environment.Exit()`, hang on
-threads, or leave native handles open cannot harm Beacon because the runtime lives
-in a separate process.
+The assembly runs in a freshly-spawned process (whatever `spawnto_x64` is set to).
+Output streams back on each Beacon check-in. Beacon stays interactive for the
+duration. Assemblies that call `Environment.Exit()`, hang on threads, or leave native
+handles open cannot harm Beacon because the runtime lives in a separate process.
 
-### Opt-in: inline mode for trusted tooling
+### Opt-in: inline mode
 
 ```text
-beacon> senjata-execute-assembly --inline --dotnetassembly C:\corpus\Rubeus.exe \
+beacon> senjata-execute-assembly --inline --dotnetassembly C:\Tools\Rubeus.exe \
         --assemblyargs klist
 ```
 
-Inline mode hosts the CLR inside Beacon's process, then loads the assembly via CLR
-module stomping (see below). Smaller OPSEC footprint — no process spawn, no IPC, no
-cross-process injection — but Beacon is blocked for the duration. Use only for tools
-you trust to exit cleanly: Rubeus, SharpUp, Seatbelt, Certify, SharpDPAPI, and
-similar quick utilities.
+Inline mode hosts the CLR inside Beacon's process and loads the assembly via CLR
+module stomping (see [Evasion techniques](#evasion-techniques)). Smaller OPSEC
+footprint — no process spawn, no IPC, no cross-process injection — but Beacon is
+blocked for the run. Use for tools that exit cleanly.
 
 ### Arguments
 
@@ -135,18 +166,11 @@ similar quick utilities.
 | `--slotname <name>` | Override the internal mailslot name |
 | `--pipename <name>` | Override the internal named-pipe name |
 
-### Malleable C2 profile
-
-`docs/profiles/senjata-recommended.profile` ships a snippet that pins `process-inject`
-and `post-ex` to the OPSEC configuration the sacrificial path relies on
-(`NtMapViewOfSection` + `NtQueueApcThread-s` instead of `VirtualAllocEx` +
-`CreateRemoteThread`). Merge it into your existing profile.
-
 ---
 
 ## Evasion techniques
 
-### 1. Hardware breakpoints + VEH for API neutralisation (patchless)
+### 1. Hardware breakpoints + VEH for API neutralisation
 
 `opsec-hwbp` sets `DR0`–`DR3` to the addresses of `AmsiScanBuffer`, `NtTraceControl`
 (or `EtwEventWrite`), `AllocConsole`, and `RtlExitUserProcess`, then registers a
@@ -182,8 +206,8 @@ Strike's loader provides. No `kernel32.dll`, no `ntdll.dll`, no `amsi.dll`, no
 `obf!("string")` encrypts every string literal at macro-expansion time using a
 per-call-site XOR key derived from the source span. At runtime, the macro returns a
 stack-resident `SecureStr<N>` whose `Drop` impl uses `core::ptr::write_volatile` to
-zero the buffer. `hash!()` is the same idea for cases where only the hash is needed
-— the plaintext never enters the binary at all.
+zero the buffer. `hash!()` is the same idea for cases where only the hash is needed —
+the plaintext never enters the binary at all.
 
 ### 4. Indirect syscalls via ntdll gadget
 
@@ -197,8 +221,8 @@ NT API it needs:
    `indirect_syscall_n` function that sets `RAX = SSN` and jumps to the cached
    `syscall; ret` gadget
 
-The `syscall` instruction never appears in the BOF's own `.text`. Currently used
-for `NtGetContextThread`, `NtSetContextThread` (HWBP install/uninstall), and
+The `syscall` instruction never appears in the BOF's own `.text`. Currently used for
+`NtGetContextThread`, `NtSetContextThread` (HWBP install/uninstall), and
 `NtProtectVirtualMemory` (inline-mode CLR stomp).
 
 ### 5. CLR module stomping (inline mode)
@@ -227,14 +251,13 @@ Additional inline-mode hardening:
   `AllowStrongNameBypass=1`, `GeneratePublisherEvidence=0` (prevents a 90-second CRL
   timeout on isolated hosts), `DisableAttachThread=1`, `LogEnable=0`,
   `DbgEnableMiniDump=0`. All saved before set and restored on every error path
-- **Process-heap allocator** for `IHostMalloc` (the CLR's `EEStartup` makes
-  thousands of small allocations — using `VirtualAlloc` per call exhausts address
-  space due to 64 KB granularity)
-- **Indirect `NtProtectVirtualMemory`** for the stomp itself (Task above), so the
-  page-protection change does not surface as a `kernel32!VirtualProtect` call from
-  the BOF thread
-- **PEB ImageBase entropy** mixed into the BofState named-mapping derivation, so
-  the `Local\<8hex>` name is unique per Beacon spawn (defeats static-regex
+- **Process-heap allocator** for `IHostMalloc` (the CLR's `EEStartup` makes thousands
+  of small allocations — using `VirtualAlloc` per call exhausts address space due to
+  64 KB granularity)
+- **Indirect `NtProtectVirtualMemory`** for the stomp itself, so the page-protection
+  change does not surface as a `kernel32!VirtualProtect` call from the BOF thread
+- **PEB ImageBase entropy** mixed into the BofState named-mapping derivation, so the
+  `Local\<8hex>` name is unique per Beacon spawn (defeats static-regex
   fingerprinting)
 - **Payload scrub** — once the stomp confirms the assembly is loaded, zero and
   `GlobalFree` the source buffer in our heap
@@ -244,8 +267,8 @@ Additional inline-mode hardening:
 Sacrificial mode (`senjata-runner.x64.dll`) does not use CLR stomping. The Aggressor
 script packages args + the runner DLL into a User-Defined Post-ex Kit (UDPK) blob;
 Beacon spawns a sacrificial process, injects the DLL, and the runner hosts the CLR
-from scratch in clean memory. Output streams over a named pipe that an early-spawned
-reader thread pumps back to operator via `BeaconOutput`.
+from scratch in clean memory. Output streams over a named pipe that an
+early-spawned reader thread pumps back to operator via `BeaconOutput`.
 
 Because the CLR is in clean memory, sacrificial mode does not need stomping — it
 uses standard `AppDomain.Load_3(byte[])` after installing the same HWBP bypasses as
@@ -262,7 +285,7 @@ signature → length-prefixed version string). Handles both PE32 (`0x10B`) and P
 Then it scans the assembly bytes for `TargetFrameworkAttribute`:
 
 - `.NETFramework,Version=` → `clr_netfx::run` (CLR 4.x COM hosting)
-- `.NETCoreApp,Version=`   → `clr_core::run` → `opsec_coreclr::run`
+- `.NETCoreApp,Version=` → `clr_core::run` → `opsec_coreclr::run`
 
 If neither marker is present, the BOF hard-errors with `TargetFrameworkUnknown`
 rather than guessing.
@@ -284,29 +307,29 @@ Beacon's loader recognises only the standard COFF section names (`.text`, `.rdat
 
 ```
 crates/
-  rustbof / rustbof-derive   - vendored BOF runtime (not modified)
-  opsec-strcrypt             - proc-macro: obf!(), obfw!(), hash!()
-  opsec-strcrypt-rt          - runtime support for SecureStr / SecureWideStr
-  opsec-peb                  - PEB walker + DJB2 export resolver
-  opsec-bootstrap            - indirect-syscall engine
-  opsec-hwbp                 - hardware breakpoint engine + VEH dispatch
-  opsec-com                  - COM / CLR FFI vtables
-  opsec-coreclr              - CoreCLR hosting bridge (.NET 6+)
-  clr-orchestrator           - shared CLR-hosting logic
+  rustbof / rustbof-derive   — vendored BOF runtime (unmodified)
+  opsec-strcrypt             — proc-macro: obf!(), obfw!(), hash!()
+  opsec-strcrypt-rt          — runtime support for SecureStr / SecureWideStr
+  opsec-peb                  — PEB walker + DJB2 export resolver
+  opsec-bootstrap            — indirect-syscall engine
+  opsec-hwbp                 — hardware breakpoint engine + VEH dispatch
+  opsec-com                  — COM / CLR FFI vtables
+  opsec-coreclr              — CoreCLR hosting bridge (.NET 6+)
+  clr-orchestrator           — shared CLR-hosting logic
                                (pe_parser, io, cleanup, dispatch, netfx,
                                 coreclr, flush, nlog, bypasses)
 
-bofs/senjata-execute-assembly - BOF for inline mode (--inline flag)
-                                staticlib -> COFF .o via boflink
-bofs/senjata-runner           - post-ex DLL for sacrificial mode (default)
-                                cdylib -> senjata-runner.x64.dll
+bofs/senjata-execute-assembly — BOF for inline mode (--inline flag)
+                                staticlib → COFF .o via boflink
+bofs/senjata-runner           — post-ex DLL for sacrificial mode (default)
+                                cdylib → senjata-runner.x64.dll
 
-stub/senjata-flush-helper     - FlushHelper.exe (rebinds Console.Out to raw
+stub/senjata-flush-helper     — FlushHelper.exe (rebinds Console.Out to raw
                                 pipe handle)
-stub/senjata-nlog-helper      - NLogConfigHelper.exe (reflects NLog at runtime;
+stub/senjata-nlog-helper      — NLogConfigHelper.exe (reflects NLog at runtime;
                                 routes Snaffler / SharpHound output via
                                 ConsoleTarget)
-stub/senjata-loader           - SenjataLoader.dll (CoreCLR managed bridge)
+stub/senjata-loader           — SenjataLoader.dll (CoreCLR managed bridge)
 ```
 
 All `opsec-*` crates, `clr-orchestrator`, the BOF, and the post-ex DLL are `no_std`;
@@ -356,7 +379,7 @@ Checks performed:
 
 ---
 
-## Limitations / known issues
+## Limitations
 
 - **Inline mode + `Environment.Exit`**: protected by the exit-trap HWBP. Untrusted
   assemblies that touch COM apartments, STA threads, or native handles may still
@@ -372,6 +395,17 @@ Checks performed:
 
 ---
 
+## Contributing
+
+Contributions are welcome. Before opening a PR:
+
+1. Run `cargo make test` and `cargo make lint` locally
+2. `cargo make build` must succeed end-to-end (both OPSEC validators print `OK`)
+3. Keep the no-plaintext-API-names invariant — use `obf!()` and `hash!()` for any new
+   string literals or API references
+
+---
+
 ## Credits
 
 - [@rad9800](https://github.com/rad9800) — patchless hook technique
@@ -382,11 +416,12 @@ Checks performed:
 
 ## License
 
-See LICENSE file.
+Released under the MIT License. See [LICENSE](LICENSE).
 
 ---
 
 ## Disclaimer
 
 This is offensive security research tooling. Use only against systems you own or have
-explicit written authorisation to test. The author is not responsible for misuse.
+explicit written authorisation to test. The author and contributors assume no
+liability and are not responsible for any misuse or damage caused by this program.
