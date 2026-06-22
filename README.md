@@ -19,7 +19,6 @@ and .NET 6 / 7 / 8.
 
 ## Table of contents
 
-- [Motivation](#motivation)
 - [Features](#features)
 - [Quick start](#quick-start)
 - [Build](#build)
@@ -30,24 +29,6 @@ and .NET 6 / 7 / 8.
 - [Limitations](#limitations)
 - [Credits](#credits)
 - [License](#license)
-
----
-
-## Motivation
-
-The stock `execute-assembly` and most public ports leak signal at three layers:
-
-1. **AMSI / ETW / AllocConsole** are patched with `0xC3` / `0x00` bytes at well-known
-   offsets. EDRs flag both the patch event and the resulting unbacked `.text` in
-   user-space.
-2. **`Environment.Exit()`** inside the managed assembly walks all the way down to
-   `RtlExitUserProcess`, taking Beacon with it.
-3. **Imports / runtime calls** expose plaintext strings like `AmsiScanBuffer`,
-   `EtwEventWrite`, `GetProcAddress`, `LoadLibrary` in `.rdata` and the BOF's IAT.
-
-This project addresses all three at the technique level — hardware breakpoints
-instead of byte patches, PEB-walking with DJB2 hashing instead of named imports, and
-indirect syscalls for the two NT APIs that must be invoked from our own thread.
 
 ---
 
